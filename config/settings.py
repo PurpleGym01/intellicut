@@ -18,6 +18,12 @@ class ConfigService:
         self.switch_penalty = 0.02     # штраф за переключение в скоринге
         self.max_sources = 3
         self.camera_scan_max_index = 30
+        # Параметры аудио-захвата (стабильность потока важнее низкой задержки).
+        # audio_sample_rate=None -> использовать default_samplerate устройства.
+        self.audio_sample_rate = None
+        self.audio_blocksize = 0
+        self.audio_latency = "high"
+        self.audio_channels = 1
         # Явная привязка источника к аудио-инпуту:
         # - int: индекс устройства sounddevice
         # - str: подстрока имени устройства (регистронезависимо)

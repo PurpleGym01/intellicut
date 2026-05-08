@@ -14,6 +14,8 @@ class LoggerService:
 
     def _configure(self):
         self.logger = logging.getLogger("Intellicut")
+        if self.logger.handlers:
+            return
         self.logger.setLevel(logging.INFO)
 
         # Создание папки для логов

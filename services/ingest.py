@@ -29,8 +29,7 @@ class CameraCapture:
         self.cap = None
         self.frame = None
         self.running = False
-        self.lock = threading.Lock()
-        self.audio_level = 0.0
+        self.frame_lock = threading.Lock()
         self.available = False
         self.audio_capture = MicrophoneCapture(source_name=source_name, device_id=audio_device_id)
         self.capture_thread = None
@@ -69,18 +68,17 @@ class CameraCapture:
         while self.running:
             ret, frame = self.cap.read()
             if ret:
-                with self.lock:
+                with self.frame_lock:
                     self.frame = frame
-                    self.audio_level = self.audio_capture.get_level()
             else:
                 time.sleep(0.1)
 
     def get_frame(self):
-        with self.lock:
+        with self.frame_lock:
             return self.frame.copy() if self.frame is not None else None
 
     def get_audio_level(self):
-        return self.audio_level
+        return self.audio_capture.get_level()
 
     def stop(self):
         self.running = False
@@ -104,13 +102,18 @@ class MicrophoneCapture:
         self.available = False
         self.lock = threading.Lock()
         self.logger = logger_service.get_logger()
+        self.sample_rate = None
+        self.channels = 1
+        self.blocksize = 0
+        self.latency = "high"
 
     def _audio_callback(self, indata, frames, time_info, status):
         del frames, time_info
         if status:
             self.logger.debug(f"Audio callback status for {self.source_name}: {status}")
         try:
-            rms = float(np.sqrt(np.mean(np.square(indata))))
+            # Векторизованный RMS без лишних аллокаций.
+            rms = float(np.sqrt(np.mean(indata * indata)))
         except Exception:
             rms = 0.0
         # Приводим к диапазону 0..1 и сглаживаем, чтобы не было резкой дерготни.
@@ -118,22 +121,47 @@ class MicrophoneCapture:
         with self.lock:
             self.level = 0.85 * self.level + 0.15 * normalized
 
+    def _resolve_stream_params(self):
+        # Опираемся на параметры устройства, чтобы не ломать аудиостек ОС.
+        self.channels = max(1, int(getattr(config_service, "audio_channels", 1)))
+        self.blocksize = int(getattr(config_service, "audio_blocksize", 0) or 0)
+        self.latency = getattr(config_service, "audio_latency", "high") or "high"
+        sample_rate = getattr(config_service, "audio_sample_rate", None)
+        if sample_rate:
+            self.sample_rate = int(sample_rate)
+            return
+        try:
+            device_info = sd.query_devices(self.device_id)
+            self.sample_rate = int(device_info.get("default_samplerate", 16000))
+        except Exception:
+            self.sample_rate = 16000
+
     def start(self):
         if self.device_id is None:
             self.logger.warning(f"No audio input assigned for {self.source_name}. Using level=0.")
             return
         try:
+            self._resolve_stream_params()
             self.stream = sd.InputStream(
                 device=self.device_id,
-                channels=1,
-                samplerate=16000,
-                blocksize=1024,
+                channels=self.channels,
+                samplerate=self.sample_rate,
+                blocksize=self.blocksize,
+                latency=self.latency,
                 callback=self._audio_callback,
             )
             self.stream.start()
             self.available = True
             device_name = sd.query_devices(self.device_id)["name"]
-            self.logger.info(f"Audio input opened for {self.source_name}: [{self.device_id}] {device_name}")
+            self.logger.info(
+                "Audio input opened for %s: [%s] %s (sr=%s, block=%s, latency=%s)",
+                self.source_name,
+                self.device_id,
+                device_name,
+                self.sample_rate,
+                self.blocksize,
+                self.latency,
+            )
         except Exception as e:
             self.available = False
             self.logger.warning(f"Audio input failed for {self.source_name}: {e}")
@@ -145,11 +173,8 @@ class MicrophoneCapture:
     def stop(self):
         if self.stream:
             try:
-                self.stream.abort()
-            except Exception as e:
-                self.logger.debug(f"Audio abort failed for {self.source_name}: {e}")
-            try:
-                self.stream.stop()
+                if self.stream.active:
+                    self.stream.stop()
             except Exception as e:
                 self.logger.debug(f"Audio stop failed for {self.source_name}: {e}")
             try:
@@ -275,8 +300,8 @@ class IngestService:
         return found
 
     def add_source(self, name: str, device_id: int = 0) -> VideoSource:
-        if len(self.sources) >= 3:
-            raise ValueError("Max sources limit (3) reached")
+        if len(self.sources) >= config_service.max_sources:
+            raise ValueError(f"Max sources limit ({config_service.max_sources}) reached")
 
         source = SourceFactory.create_source(len(self.sources) + 1, name, "camera")
         audio_device_id = self.reserve_audio_device_for_source(name, camera_device_id=device_id)
@@ -335,7 +360,13 @@ class IngestService:
         for cap in list(self.captures):
             cap.stop()
         try:
-            sd.stop()
+            # Глобальный stop может затронуть чужие потоки, используем аккуратно.
+            sd.stop(ignore_errors=True)
+        except TypeError:
+            try:
+                sd.stop()
+            except Exception as e:
+                self.logger.debug(f"Global audio stop failed: {e}")
         except Exception as e:
             self.logger.debug(f"Global audio stop failed: {e}")
         self.captures.clear()
