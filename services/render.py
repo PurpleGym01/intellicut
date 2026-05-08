@@ -13,6 +13,7 @@ class FFmpegAdapter:
         self.output_path = None
         self.fps = 30
         self.frame_size = None
+        self.last_output_path = None
 
     @staticmethod
     def _build_output_path() -> str:
@@ -24,6 +25,7 @@ class FFmpegAdapter:
     def start_recording(self, width=640, height=480, fps=30):
         del width, height
         self.output_path = self._build_output_path()
+        self.last_output_path = self.output_path
         Path(self.output_path).parent.mkdir(exist_ok=True)
         self.fps = fps
         self.frame_size = None
@@ -62,3 +64,4 @@ class FFmpegAdapter:
             self.writer.release()
             self.writer = None
             self.logger.info(f"Recording stopped: {self.output_path}")
+        return self.output_path

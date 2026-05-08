@@ -2,6 +2,9 @@ from services.ingest import IngestService
 from services.analysis import AnalysisService, AudioActivityStrategy
 from services.switching import SwitchingEngine
 from services.render import FFmpegAdapter
+from services.audio_mix import mix_wav_files
+from services.audio_mux import mux_audio_video
+from pathlib import Path
 from core.events import event_bus
 from models.domain import SwitchEvent, ScenePreset, SourceStatus
 from utils.logger import logger_service
@@ -54,6 +57,8 @@ class IntellicutFacade:
         self.is_running = True
         if not self.render.start_recording():
             self.logger.warning("Recording backend failed to start. Continuing without recording.")
+        else:
+            self.ingest.start_audio_recording(self.render.output_path)
         self.logger.info("System STARTED")
         event_bus.notify({"status": "started"})
 
@@ -61,7 +66,25 @@ class IntellicutFacade:
         if not self.is_running:
             return
         self.is_running = False
-        self.render.stop_recording()
+        if self.ingest.audio_recording_active:
+            self.ingest.stop_audio_recording()
+        video_path = self.render.stop_recording()
+        if getattr(config_service, "record_audio", False) and video_path:
+            audio_paths = list(self.ingest.audio_recording_paths or [])
+            if audio_paths:
+                mixed_path = str(Path(video_path).with_name(f"{Path(video_path).stem}_mix.wav"))
+                mixed = mix_wav_files(audio_paths, mixed_path, normalize=True)
+                if mixed:
+                    muxed = mux_audio_video(video_path, mixed)
+                    if muxed:
+                        self.render.last_output_path = muxed
+                        self.logger.info(f"Audio muxed into output: {muxed}")
+                    else:
+                        self.logger.warning("Audio mux failed; keeping video-only output")
+                else:
+                    self.logger.warning("Audio mix failed; keeping video-only output")
+            else:
+                self.logger.info("No audio files to mix; keeping video-only output")
         self.logger.info("System STOPPED")
         event_bus.notify({"status": "stopped"})
 

@@ -8,6 +8,10 @@ import threading
 import time
 import sys
 from config.settings import config_service
+import queue
+import wave
+import re
+from pathlib import Path
 
 
 class SourceFactory:
@@ -93,6 +97,59 @@ class CameraCapture:
         self.available = False
 
 
+class AudioFileWriter:
+    def __init__(self, file_path: str, sample_rate: int, channels: int, logger):
+        self.file_path = file_path
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.logger = logger
+        self.queue = queue.Queue(maxsize=64)
+        self.running = True
+        self._dropped = 0
+        self.wav = wave.open(self.file_path, "wb")
+        self.wav.setnchannels(self.channels)
+        self.wav.setsampwidth(2)
+        self.wav.setframerate(self.sample_rate)
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def push(self, frames: np.ndarray):
+        if not self.running:
+            return
+        try:
+            self.queue.put_nowait(frames)
+        except queue.Full:
+            self._dropped += 1
+            if self._dropped % 200 == 0:
+                self.logger.warning("Audio writer queue full; dropping frames")
+
+    def _run(self):
+        while True:
+            item = self.queue.get()
+            if item is None:
+                break
+            try:
+                data = np.clip(item, -1.0, 1.0)
+                pcm = (data * 32767.0).astype(np.int16, copy=False)
+                self.wav.writeframes(pcm.tobytes())
+            except Exception as exc:
+                self.logger.debug(f"Audio writer failed: {exc}")
+        try:
+            self.wav.close()
+        except Exception:
+            pass
+
+    def stop(self):
+        if not self.running:
+            return
+        self.running = False
+        try:
+            self.queue.put_nowait(None)
+        except queue.Full:
+            self.queue.put(None)
+        self.thread.join(timeout=2.0)
+
+
 class MicrophoneCapture:
     def __init__(self, source_name: str, device_id: Optional[int]):
         self.source_name = source_name
@@ -111,6 +168,8 @@ class MicrophoneCapture:
         self.last_restart_ts = 0.0
         self.restart_requested = False
         self.restart_lock = threading.Lock()
+        self.audio_writer = None
+        self.audio_writer_path = None
 
     def _audio_callback(self, indata, frames, time_info, status):
         del frames, time_info
@@ -130,6 +189,8 @@ class MicrophoneCapture:
         normalized = min(1.0, rms * 12.0)
         with self.lock:
             self.level = 0.85 * self.level + 0.15 * normalized
+        if self.audio_writer is not None:
+            self.audio_writer.push(indata.copy())
 
     def _track_status_error(self, now_ts: float):
         window_sec = float(getattr(config_service, "audio_restart_window_sec", 5.0))
@@ -200,6 +261,46 @@ class MicrophoneCapture:
             self.available = False
             self.logger.warning(f"Audio input failed for {self.source_name}: {e}")
 
+    def _safe_audio_filename(self, base_name: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", base_name).strip("_")
+        return cleaned or "audio"
+
+    def start_recording(self, output_dir: str):
+        if not getattr(config_service, "record_audio", False):
+            return None
+        if self.audio_writer is not None:
+            return self.audio_writer_path
+        if self.sample_rate is None:
+            self._resolve_stream_params()
+        file_name = f"{self._safe_audio_filename(self.source_name)}.wav"
+        output_path = str(Path(output_dir) / file_name)
+        try:
+            self.audio_writer = AudioFileWriter(
+                output_path,
+                int(self.sample_rate or 16000),
+                int(self.channels or 1),
+                self.logger,
+            )
+            self.audio_writer_path = output_path
+            return output_path
+        except Exception as exc:
+            self.logger.warning(f"Audio recording init failed for {self.source_name}: {exc}")
+            self.audio_writer = None
+            self.audio_writer_path = None
+            return None
+
+    def stop_recording(self):
+        if self.audio_writer is None:
+            return None
+        try:
+            self.audio_writer.stop()
+        except Exception as exc:
+            self.logger.debug(f"Audio recording stop failed for {self.source_name}: {exc}")
+        path = self.audio_writer_path
+        self.audio_writer = None
+        self.audio_writer_path = None
+        return path
+
     def get_level(self) -> float:
         self._restart_if_needed()
         with self.lock:
@@ -221,6 +322,7 @@ class MicrophoneCapture:
         with self.restart_lock:
             self.restart_requested = False
         self.status_error_times.clear()
+        self.stop_recording()
 
 
 class IngestService:
@@ -234,6 +336,9 @@ class IngestService:
         self.auto_audio_device_queue = self._build_auto_audio_queue()
         self.discovered_video_devices = self.discover_video_devices(config_service.camera_scan_max_index)
         self.stopped = False
+        self.audio_recording_active = False
+        self.audio_recording_paths = []
+        self.audio_output_dir = None
 
     def refresh_devices(self):
         self.audio_input_devices = self._list_audio_input_devices()
@@ -403,9 +508,39 @@ class IngestService:
                     if self.sources[i].status != SourceStatus.ACTIVE:
                         self.sources[i].audio_level = level
 
+    def start_audio_recording(self, output_path: str):
+        if not getattr(config_service, "record_audio", False):
+            return []
+        if self.audio_recording_active:
+            return self.audio_recording_paths
+        base_path = Path(output_path)
+        audio_dir = base_path.with_suffix("").as_posix() + "_audio"
+        Path(audio_dir).mkdir(parents=True, exist_ok=True)
+        self.audio_output_dir = audio_dir
+        self.audio_recording_paths = []
+        for cap in self.captures:
+            path = cap.audio_capture.start_recording(audio_dir)
+            if path:
+                self.audio_recording_paths.append(path)
+        self.audio_recording_active = True
+        return self.audio_recording_paths
+
+    def stop_audio_recording(self):
+        if not self.audio_recording_active:
+            return []
+        paths = []
+        for cap in self.captures:
+            path = cap.audio_capture.stop_recording()
+            if path:
+                paths.append(path)
+        self.audio_recording_active = False
+        self.audio_recording_paths = paths
+        return paths
+
     def stop_all(self):
         if self.stopped:
             return
+        self.stop_audio_recording()
         self.stopped = True
         self.used_audio_device_ids.clear()
         for cap in list(self.captures):
