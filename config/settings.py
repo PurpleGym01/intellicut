@@ -24,6 +24,11 @@ class ConfigService:
         self.audio_blocksize = 0
         self.audio_latency = "high"
         self.audio_channels = 1
+        # Параметры контроля здоровья аудио-потока.
+        self.audio_status_log_interval_sec = 2.0
+        self.audio_restart_window_sec = 5.0
+        self.audio_restart_max_errors = 6
+        self.audio_restart_cooldown_sec = 10.0
         # Явная привязка источника к аудио-инпуту:
         # - int: индекс устройства sounddevice
         # - str: подстрока имени устройства (регистронезависимо)

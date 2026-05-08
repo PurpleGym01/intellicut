@@ -106,11 +106,21 @@ class MicrophoneCapture:
         self.channels = 1
         self.blocksize = 0
         self.latency = "high"
+        self.status_error_times = []
+        self.last_status_log_ts = 0.0
+        self.last_restart_ts = 0.0
+        self.restart_requested = False
+        self.restart_lock = threading.Lock()
 
     def _audio_callback(self, indata, frames, time_info, status):
         del frames, time_info
+        now = time.time()
         if status:
-            self.logger.debug(f"Audio callback status for {self.source_name}: {status}")
+            log_interval = float(getattr(config_service, "audio_status_log_interval_sec", 2.0))
+            if now - self.last_status_log_ts >= log_interval:
+                self.logger.debug(f"Audio callback status for {self.source_name}: {status}")
+                self.last_status_log_ts = now
+            self._track_status_error(now)
         try:
             # Векторизованный RMS без лишних аллокаций.
             rms = float(np.sqrt(np.mean(indata * indata)))
@@ -120,6 +130,30 @@ class MicrophoneCapture:
         normalized = min(1.0, rms * 12.0)
         with self.lock:
             self.level = 0.85 * self.level + 0.15 * normalized
+
+    def _track_status_error(self, now_ts: float):
+        window_sec = float(getattr(config_service, "audio_restart_window_sec", 5.0))
+        max_errors = int(getattr(config_service, "audio_restart_max_errors", 6))
+        cooldown = float(getattr(config_service, "audio_restart_cooldown_sec", 10.0))
+        if now_ts - self.last_restart_ts < cooldown:
+            return
+        self.status_error_times = [t for t in self.status_error_times if now_ts - t <= window_sec]
+        self.status_error_times.append(now_ts)
+        if len(self.status_error_times) >= max_errors:
+            with self.restart_lock:
+                self.restart_requested = True
+
+    def _restart_if_needed(self):
+        with self.restart_lock:
+            if not self.restart_requested:
+                return
+            self.restart_requested = False
+        self.last_restart_ts = time.time()
+        self.status_error_times.clear()
+        self.logger.warning(f"Restarting audio stream for {self.source_name} due to repeated errors")
+        self.stop()
+        time.sleep(0.2)
+        self.start()
 
     def _resolve_stream_params(self):
         # Опираемся на параметры устройства, чтобы не ломать аудиостек ОС.
@@ -167,6 +201,7 @@ class MicrophoneCapture:
             self.logger.warning(f"Audio input failed for {self.source_name}: {e}")
 
     def get_level(self) -> float:
+        self._restart_if_needed()
         with self.lock:
             return self.level
 
@@ -183,6 +218,9 @@ class MicrophoneCapture:
                 self.logger.debug(f"Audio close failed for {self.source_name}: {e}")
         self.stream = None
         self.available = False
+        with self.restart_lock:
+            self.restart_requested = False
+        self.status_error_times.clear()
 
 
 class IngestService:
@@ -196,6 +234,19 @@ class IngestService:
         self.auto_audio_device_queue = self._build_auto_audio_queue()
         self.discovered_video_devices = self.discover_video_devices(config_service.camera_scan_max_index)
         self.stopped = False
+
+    def refresh_devices(self):
+        self.audio_input_devices = self._list_audio_input_devices()
+        self.used_audio_device_ids.clear()
+        self.auto_audio_device_queue = self._build_auto_audio_queue()
+        self.discovered_video_devices = self.discover_video_devices(config_service.camera_scan_max_index)
+
+    def reset_scene(self):
+        # Полная остановка перед пересборкой сцены.
+        self.stop_all()
+        self.stopped = False
+        self.emulation_mode = False
+        self.refresh_devices()
 
     def _list_audio_input_devices(self):
         devices = []

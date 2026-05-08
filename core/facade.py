@@ -15,8 +15,21 @@ class IntellicutFacade:
         self.render = FFmpegAdapter()
         self.logger = logger_service.get_logger()
         self.is_running = False
+        self.scene_configured = False
 
-    def setup_scene(self, source_names: list):
+    def setup_scene(self, source_names: list, reset: bool = False):
+        if self.is_running and reset:
+            self.stop()
+        if self.scene_configured and not reset:
+            self.logger.warning("Scene already configured; call setup_scene(..., reset=True) to rebuild.")
+            return
+        if reset:
+            self.ingest.reset_scene()
+            self.switching.current_source_id = None
+            self.switching.pending_source_id = None
+            self.switching.pending_since = 0
+            self.switching.last_switch_time = 0
+
         detected = self.ingest.discovered_video_devices
         if detected:
             self.logger.info(f"Using detected video device indices for scene: {detected}")
@@ -29,9 +42,13 @@ class IntellicutFacade:
             else:
                 device_id = i
             self.ingest.add_source(name, device_id=device_id)
+        self.scene_configured = True
         self.logger.info(f"Scene setup with {len(source_names)} sources")
 
     def start(self):
+        if self.is_running:
+            self.logger.warning("System already running")
+            return
         if not self.ingest.get_sources():
             raise ValueError("No sources configured")
         self.is_running = True
@@ -41,6 +58,8 @@ class IntellicutFacade:
         event_bus.notify({"status": "started"})
 
     def stop(self):
+        if not self.is_running:
+            return
         self.is_running = False
         self.render.stop_recording()
         self.logger.info("System STOPPED")

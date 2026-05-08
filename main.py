@@ -13,13 +13,14 @@ def main():
     # Настройка: подключаем реальные камеры (ID 0, 1, 2)
     # Если камер нет, будут ошибки при старте Ingest
     try:
-        system.setup_scene(["Camera 1", "Camera 2", "Camera 3"])
+        system.setup_scene(["Camera 1", "Camera 2", "Camera 3"], reset=True)
         # Для теста пока оставляем эмуляцию в facade,
         # но ingest уже готов к работе с cv2
     except Exception as e:
         print(f"Warning: {e}")
 
     cleanup_done = False
+    started = False
 
     def _cleanup():
         nonlocal cleanup_done
@@ -44,6 +45,7 @@ def main():
 
     try:
         system.start()
+        started = True
         print("System running. Press Q in video window or Ctrl+C to stop.")
         next_preview_ts = 0.0
         while True:
