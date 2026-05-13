@@ -4,7 +4,7 @@ from pathlib import Path
 import wave
 
 
-def mix_wav_files(input_paths: List[str], output_path: str, normalize: bool = True) -> str:
+def mix_wav_files(input_paths: List[str], output_path: str, normalize: bool = True, target_duration_sec: float = 0.0) -> str:
     if not input_paths:
         return ""
 
@@ -37,6 +37,13 @@ def mix_wav_files(input_paths: List[str], output_path: str, normalize: bool = Tr
 
     if normalize and np.max(np.abs(mix)) > 1.0:
         mix /= np.max(np.abs(mix))
+
+    if target_duration_sec and sample_rate:
+        target_frames = int(target_duration_sec * sample_rate)
+        if target_frames > mix.shape[0]:
+            mix = np.pad(mix, (0, target_frames - mix.shape[0]))
+        elif target_frames < mix.shape[0]:
+            mix = mix[:target_frames]
 
     mix_pcm = np.clip(mix, -1.0, 1.0)
     mix_pcm = (mix_pcm * 32767.0).astype(np.int16)

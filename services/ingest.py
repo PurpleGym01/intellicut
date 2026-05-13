@@ -537,6 +537,35 @@ class IngestService:
         self.audio_recording_paths = paths
         return paths
 
+    def cleanup_audio_recording_files(self):
+        if not self.audio_recording_paths and not self.audio_output_dir:
+            return
+        # Remove per-source wav files.
+        for path in list(self.audio_recording_paths or []):
+            try:
+                if path:
+                    Path(path).unlink(missing_ok=True)
+            except Exception as exc:
+                self.logger.debug(f"Audio temp cleanup failed for {path}: {exc}")
+        # Remove mix wav if present.
+        try:
+            if self.audio_output_dir:
+                for file_path in Path(self.audio_output_dir).glob("*.wav"):
+                    file_path.unlink(missing_ok=True)
+        except Exception as exc:
+            self.logger.debug(f"Audio mix cleanup failed in {self.audio_output_dir}: {exc}")
+        # Remove directory if empty.
+        try:
+            if self.audio_output_dir:
+                audio_dir = Path(self.audio_output_dir)
+                if audio_dir.exists() and not any(audio_dir.iterdir()):
+                    audio_dir.rmdir()
+        except Exception as exc:
+            self.logger.debug(f"Audio dir cleanup failed for {self.audio_output_dir}: {exc}")
+
+        self.audio_recording_paths = []
+        self.audio_output_dir = None
+
     def stop_all(self):
         if self.stopped:
             return

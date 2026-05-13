@@ -18,6 +18,8 @@ class ConfigService:
         self.switch_penalty = 0.02     # штраф за переключение в скоринге
         self.max_sources = 3
         self.camera_scan_max_index = 30
+        # Целевой FPS записи видео.
+        self.video_fps = 30
         # Параметры аудио-захвата (стабильность потока важнее низкой задержки).
         # audio_sample_rate=None -> использовать default_samplerate устройства.
         self.audio_sample_rate = None
@@ -41,7 +43,11 @@ class ConfigService:
         # Если True, первые два автоматически выбранных аудио-девайса меняются местами.
         self.swap_first_two_audio_sources = True
         # Включать ли запись аудио в финальный mp4.
-        self.record_audio = False
+        self.record_audio = True
+        # Автоочистка временных аудио-файлов после остановки.
+        self.auto_cleanup_audio_temp = True
+        # Удалять временные аудио-файлы даже при неудачном миксе/мультиплексировании.
+        self.auto_cleanup_audio_on_failure = True
         # Индекс аудио-устройства для ffmpeg (macOS avfoundation). Обычно 0.
         self.ffmpeg_audio_device_index = 0
         self.output_path = "output/recording.mp4"

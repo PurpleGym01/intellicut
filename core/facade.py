@@ -55,7 +55,7 @@ class IntellicutFacade:
         if not self.ingest.get_sources():
             raise ValueError("No sources configured")
         self.is_running = True
-        if not self.render.start_recording():
+        if not self.render.start_recording(fps=int(getattr(config_service, "video_fps", 30) or 30)):
             self.logger.warning("Recording backend failed to start. Continuing without recording.")
         else:
             self.ingest.start_audio_recording(self.render.output_path)
@@ -69,14 +69,19 @@ class IntellicutFacade:
         if self.ingest.audio_recording_active:
             self.ingest.stop_audio_recording()
         video_path = self.render.stop_recording()
+        mix_success = False
+        mux_success = False
         if getattr(config_service, "record_audio", False) and video_path:
             audio_paths = list(self.ingest.audio_recording_paths or [])
             if audio_paths:
+                video_duration_sec = max(self.render._frame_count / max(self.render.fps, 1), 0.0)
                 mixed_path = str(Path(video_path).with_name(f"{Path(video_path).stem}_mix.wav"))
-                mixed = mix_wav_files(audio_paths, mixed_path, normalize=True)
+                mixed = mix_wav_files(audio_paths, mixed_path, normalize=True, target_duration_sec=video_duration_sec)
                 if mixed:
+                    mix_success = True
                     muxed = mux_audio_video(video_path, mixed)
                     if muxed:
+                        mux_success = True
                         self.render.last_output_path = muxed
                         self.logger.info(f"Audio muxed into output: {muxed}")
                     else:
@@ -85,6 +90,16 @@ class IntellicutFacade:
                     self.logger.warning("Audio mix failed; keeping video-only output")
             else:
                 self.logger.info("No audio files to mix; keeping video-only output")
+
+        # Auto-cleanup temporary audio files if configured.
+        if getattr(config_service, "auto_cleanup_audio_temp", False):
+            cleanup_on_failure = bool(getattr(config_service, "auto_cleanup_audio_on_failure", False))
+            should_cleanup = mix_success and mux_success
+            if cleanup_on_failure:
+                should_cleanup = True
+            if should_cleanup:
+                self.ingest.cleanup_audio_recording_files()
+
         self.logger.info("System STOPPED")
         event_bus.notify({"status": "stopped"})
 
