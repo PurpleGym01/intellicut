@@ -20,7 +20,13 @@ class IntellicutFacade:
         self.is_running = False
         self.scene_configured = False
 
-    def setup_scene(self, source_names: list, reset: bool = False):
+    def setup_scene(
+        self,
+        source_names: list,
+        reset: bool = False,
+        video_device_ids: list = None,
+        audio_device_ids: list = None,
+    ):
         if self.is_running and reset:
             self.stop()
         if self.scene_configured and not reset:
@@ -33,7 +39,7 @@ class IntellicutFacade:
             self.switching.pending_since = 0
             self.switching.last_switch_time = 0
 
-        detected = self.ingest.discovered_video_devices
+        detected = video_device_ids if video_device_ids is not None else self.ingest.discovered_video_devices
         if detected:
             self.logger.info(f"Using detected video device indices for scene: {detected}")
         else:
@@ -42,9 +48,13 @@ class IntellicutFacade:
         for i, name in enumerate(source_names):
             if i < len(detected):
                 device_id = detected[i]
+            elif video_device_ids is not None:
+                self.logger.warning(f"Skipping {name}: no selected video device.")
+                continue
             else:
                 device_id = i
-            self.ingest.add_source(name, device_id=device_id)
+            audio_device_id = audio_device_ids[i] if audio_device_ids is not None and i < len(audio_device_ids) else None
+            self.ingest.add_source(name, device_id=device_id, audio_device_id=audio_device_id)
         self.scene_configured = True
         self.logger.info(f"Scene setup with {len(source_names)} sources")
 
@@ -58,7 +68,7 @@ class IntellicutFacade:
         if not self.render.start_recording(fps=int(getattr(config_service, "video_fps", 30) or 30)):
             self.logger.warning("Recording backend failed to start. Continuing without recording.")
         else:
-            self.ingest.start_audio_recording(self.render.output_path)
+            self.ingest.start_audio_recording(self.render.output_path, self.switching.current_source_id)
         self.logger.info("System STARTED")
         event_bus.notify({"status": "started"})
 
@@ -140,6 +150,9 @@ class IntellicutFacade:
             self.render.switch_layout(layout)
             # 5. Уведомление (Observer)
             event_bus.notify(event)
+
+        if self.ingest.audio_recording_active:
+            self.ingest.route_audio_recording(self.switching.current_source_id)
 
     def manual_override(self, source_id: int, preset: ScenePreset = ScenePreset.SPEAKER):
         event = self.switching.manual_switch(source_id, preset)
