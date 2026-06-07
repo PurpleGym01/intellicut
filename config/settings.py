@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 class ConfigService:
     _instance = None
 
@@ -10,51 +8,57 @@ class ConfigService:
         return cls._instance
 
     def _load_defaults(self):
-        # Параметры из ТЗ: минимальная длительность, cooldown, порог
-        self.min_frame_duration = 0.01  # секунды: подтверждение нового активного спикера
-        self.cooldown = 1.0            # секунды: минимальная длина текущего кадра
-        self.audio_threshold = 0.03    # нормализованный порог
-        self.switch_hysteresis = 0.02  # на сколько новый источник должен быть выше текущего
-        self.switch_penalty = 0.02     # штраф за переключение в скоринге
+        # Switching
+        self.min_frame_duration = 0.01
+        self.cooldown = 1.0
+        self.audio_threshold = 0.03
+        self.switch_hysteresis = 0.02
+        self.switch_penalty = 0.02
+
+        # Sources / UI
         self.default_camera_slots = 2
         self.max_sources = 6
         self.camera_scan_max_index = 30
-        # Целевой FPS записи видео.
+
+        # Не показывать как обычные камеры.
+        # Desk View не выкидываю, потому что он может быть полезен.
+        self.excluded_video_name_parts = [
+            "capture screen",
+            "захват экрана",
+        ]
+
+        # Video
         self.video_fps = 30
-        # Параметры аудио-захвата (стабильность потока важнее низкой задержки).
-        # audio_sample_rate=None -> использовать default_samplerate устройства.
+
+        # Audio capture
         self.audio_sample_rate = None
         self.audio_blocksize = 0
         self.audio_latency = "high"
         self.audio_channels = 1
-        # Параметры контроля здоровья аудио-потока.
+
+        # Audio health
         self.audio_status_log_interval_sec = 2.0
         self.audio_restart_window_sec = 5.0
         self.audio_restart_max_errors = 6
         self.audio_restart_cooldown_sec = 10.0
-        # Явная привязка источника к аудио-инпуту:
-        # - int: индекс устройства sounddevice
-        # - str: подстрока имени устройства (регистронезависимо)
-        # - None/отсутствует: авто-выбор
-        self.source_audio_device_hints = {
-            # "Camera 1": 0,
-            # "Camera 2": "iPhone Microphone",
-        }
-        # Сколько последних секунд медиа держать для timestamp-based выбора кадров/чанков.
+
+        # Manual hints, optional
+        self.source_audio_device_hints = {}
+
+        # Timestamp buffers
         self.media_buffer_seconds = 10.0
-        # Включать ли запись аудио в финальный mp4.
+
+        # Recording
         self.record_audio = True
-        # Автоочистка временных аудио-файлов после остановки.
         self.auto_cleanup_audio_temp = True
-        # Удалять временные аудио-файлы даже при неудачном миксе/мультиплексировании.
         self.auto_cleanup_audio_on_failure = True
-        # Индекс аудио-устройства для ffmpeg (macOS avfoundation). Обычно 0.
-        self.ffmpeg_audio_device_index = 0
+
         self.output_path = "output/recording.mp4"
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
+
 
 config_service = ConfigService()

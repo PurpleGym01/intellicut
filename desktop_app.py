@@ -46,6 +46,8 @@ class CameraAssignment:
     video_id: int
     audio_id: int | None
     name: str
+    video_name: str = ""
+    audio_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,38 +110,53 @@ class UserSettings:
     def assignments(self) -> list[CameraAssignment]:
         roles = self.data.get("camera_roles") or {}
         assignments = []
+
         for key, value in roles.items():
             if not isinstance(value, dict):
                 continue
+
             try:
                 role = int(str(key).split("_")[-1])
                 audio_id = value.get("audio_id")
+
                 assignments.append(
                     CameraAssignment(
                         role=role,
                         video_id=int(value["video_id"]),
                         audio_id=int(audio_id) if audio_id is not None else None,
                         name=value.get("name") or f"Camera {role}",
+                        video_name=value.get("video_name") or "",
+                        audio_name=value.get("audio_name") or "",
                     )
                 )
             except Exception:
                 continue
+
         return sorted(assignments, key=lambda item: item.role)
 
     def save_assignments(self, assignments: list[CameraAssignment]):
         roles = {}
+
         for assignment in assignments:
             roles[f"camera_{assignment.role}"] = {
                 "video_id": assignment.video_id,
+                "video_name": assignment.video_name,
                 "audio_id": assignment.audio_id,
+                "audio_name": assignment.audio_name,
                 "name": assignment.name,
             }
+
         self.data["camera_roles"] = roles
         self.data["camera_roles_configured"] = True
-        max_role = max((assignment.role for assignment in assignments), default=0)
-        self.data["camera_slot_count"] = max(self.camera_slot_count(), max_role, config_service.default_camera_slots)
-        self.save()
 
+        max_role = max((assignment.role for assignment in assignments), default=0)
+        self.data["camera_slot_count"] = max(
+            self.camera_slot_count(),
+            max_role,
+            config_service.default_camera_slots,
+        )
+
+        self.save()
 
 class TkLogHandler(logging.Handler):
     def __init__(self, callback):
@@ -439,11 +456,26 @@ class SetupCameraCard(tk.Frame):
 
     def update_preview(self):
         frame = self.device["get_frame"]()
+
+        target_w = 300
+        target_h = 190
+
         if frame is None:
-            frame = np.zeros((210, 300, 3), dtype=np.uint8)
-            cv2.putText(frame, "Unavailable", (48, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (120, 160, 255), 2, cv2.LINE_AA)
+            frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            cv2.putText(
+                frame,
+                "Unavailable",
+                (48, 100),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (120, 160, 255),
+                2,
+                cv2.LINE_AA,
+            )
         else:
-            frame = ConsoleUI._resize_cover(ConsoleUI._trim_black_bars(frame), target_w=300, target_h=190)
+            # В setup не используем resize_cover и trim_black_bars,
+            # чтобы preview не прыгал и не выглядел как движущаяся камера.
+            frame = CameraCard._resize_contain(frame, target_w, target_h)
 
         self.photo = frame_to_photo(frame)
         self.preview.configure(image=self.photo)
@@ -454,14 +486,21 @@ class SetupCameraCard(tk.Frame):
 
     def assignment(self):
         role_label = self.role_var.get()
+
         if role_label == "Do not use":
             return None
+
         role = int(role_label.split()[-1])
+        audio_id = self.device.get("audio_id")
+        audio_names = self.device.get("audio_names", {})
+
         return CameraAssignment(
             role=role,
             video_id=self.device["video_id"],
-            audio_id=self.device["audio_id"],
+            audio_id=audio_id,
             name=self.name_var.get().strip() or role_label,
+            video_name=self.device.get("video_name") or self.device.get("device_label", ""),
+            audio_name=audio_names.get(audio_id, "") if audio_id is not None else "",
         )
 
 
@@ -640,12 +679,12 @@ class DashboardWindow:
     def _configure_scene_from_settings(self):
         self.system.ingest.reset_scene()
         self.system.scene_configured = False
-        discovered = set(self.system.ingest.discovered_video_devices)
         slot_count = self.settings.camera_slot_count()
+        available_video_ids = set(self._available_video_ids())
         assignments = [
             item
-            for item in self.settings.assignments()
-            if item.video_id in discovered and 1 <= item.role <= slot_count
+            for item in self._resolved_settings_assignments()
+            if item.video_id in available_video_ids and 1 <= item.role <= slot_count
         ]
 
         if not assignments and not self.settings.data.get("camera_roles_configured"):
@@ -680,7 +719,19 @@ class DashboardWindow:
         return sorted(by_role.values(), key=lambda item: item.role)
 
     def _available_video_ids(self):
-        return self.system.ingest.discovered_video_devices[: config_service.max_sources]
+        excluded = [
+            str(item).lower()
+            for item in getattr(config_service, "excluded_video_name_parts", [])
+        ]
+        result = []
+        for video_id in self.system.ingest.discovered_video_devices:
+            name = self._camera_device_name(video_id).lower()
+            if any(part in name for part in excluded):
+                continue
+            result.append(video_id)
+            if len(result) >= config_service.max_sources:
+                break
+        return result
 
     def _default_assignments(self, slot_count: int | None = None):
         slot_count = self.settings.camera_slot_count() if slot_count is None else slot_count
@@ -695,6 +746,8 @@ class DashboardWindow:
                     video_id=video_id,
                     audio_id=audio_id,
                     name=f"Camera {idx}",
+                    video_name=self._camera_device_name(video_id),
+                    audio_name=self._audio_name_map().get(audio_id, "") if audio_id is not None else "",
                 )
             )
         return assignments
@@ -711,11 +764,16 @@ class DashboardWindow:
         if video_id is None:
             return None
         audio_map = self._default_audio_assignments(video_ids)
+        audio_map = self._default_audio_assignments(video_ids)
+        audio_id = audio_map.get(video_id)
+
         return CameraAssignment(
             role=role,
             video_id=video_id,
-            audio_id=audio_map.get(video_id),
+            audio_id=audio_id,
             name=f"Camera {role}",
+            video_name=self._camera_device_name(video_id),
+            audio_name=self._audio_name_map().get(audio_id, "") if audio_id is not None else "",
         )
 
     def _default_audio_assignments(self, video_ids):
@@ -810,6 +868,107 @@ class DashboardWindow:
         if len(audio_norm) > 5 and audio_norm in camera_norm:
             score += 30
         return score
+
+    def _audio_name_map(self):
+        return {
+            item["index"]: str(item.get("name", ""))
+            for item in self.system.ingest.audio_input_devices
+        }
+
+    def _video_name_map(self):
+        return {
+            video_id: self._camera_device_name(video_id)
+            for video_id in self.system.ingest.discovered_video_devices
+        }
+
+    @staticmethod
+    def _is_bad_saved_name(name: str) -> bool:
+        name = str(name or "").strip()
+        if not name:
+            return True
+        lowered = name.lower()
+        return (
+                lowered.startswith("camera device ")
+                or lowered.startswith("unknown audio")
+                or set(name) <= {"?"}
+        )
+
+    def _resolve_device_id(self, saved_id, saved_name: str, current_map: dict[int, str]):
+        """
+        Сначала пробуем старый id.
+        Если id больше не указывает на то же имя — ищем по имени.
+        """
+        try:
+            saved_id = int(saved_id)
+        except Exception:
+            saved_id = None
+
+        saved_name = str(saved_name or "").strip()
+
+        if saved_id in current_map:
+            current_name = str(current_map.get(saved_id, ""))
+
+            # Если имени не было или имя совпало — индекс еще валиден.
+            if self._is_bad_saved_name(saved_name):
+                return saved_id
+
+            if self._normalize_device_name(current_name) == self._normalize_device_name(saved_name):
+                return saved_id
+
+        # Если имя нормальное, ищем устройство по имени.
+        if not self._is_bad_saved_name(saved_name):
+            saved_norm = self._normalize_device_name(saved_name)
+
+            for device_id, current_name in current_map.items():
+                if self._normalize_device_name(current_name) == saved_norm:
+                    return device_id
+
+            for device_id, current_name in current_map.items():
+                current_norm = self._normalize_device_name(current_name)
+                if saved_norm and (saved_norm in current_norm or current_norm in saved_norm):
+                    return device_id
+
+        return saved_id if saved_id in current_map else None
+
+    def _resolve_saved_assignment(self, assignment: CameraAssignment) -> CameraAssignment | None:
+        video_names = self._video_name_map()
+        audio_names = self._audio_name_map()
+
+        video_id = self._resolve_device_id(
+            assignment.video_id,
+            assignment.video_name,
+            video_names,
+        )
+
+        if video_id is None:
+            return None
+
+        audio_id = None
+        if assignment.audio_id is not None:
+            audio_id = self._resolve_device_id(
+                assignment.audio_id,
+                assignment.audio_name,
+                audio_names,
+            )
+
+        return CameraAssignment(
+            role=assignment.role,
+            video_id=video_id,
+            audio_id=audio_id,
+            name=assignment.name,
+            video_name=video_names.get(video_id, assignment.video_name or ""),
+            audio_name=audio_names.get(audio_id, assignment.audio_name or "") if audio_id is not None else "",
+        )
+
+    def _resolved_settings_assignments(self) -> list[CameraAssignment]:
+        resolved = []
+
+        for assignment in self.settings.assignments():
+            fixed = self._resolve_saved_assignment(assignment)
+            if fixed is not None:
+                resolved.append(fixed)
+
+        return sorted(resolved, key=lambda item: item.role)
 
     def _camera_device_name(self, video_id: int):
         names = self._ffmpeg_video_names()
@@ -1026,15 +1185,16 @@ class DashboardWindow:
         audio_choice_to_id = {"No audio": None}
         for item in audio_devices:
             audio_choice_to_id[f"[{item['index']}] {item['name']}"] = item["index"]
-        saved = {item.video_id: item for item in self.settings.assignments()}
+        saved = {item.video_id: item for item in self._resolved_settings_assignments()}
         slot_count = self.settings.camera_slot_count()
-        video_ids = self.system.ingest.discovered_video_devices[: config_service.max_sources]
+        video_ids = self._available_video_ids()
         default_video_ids = self._available_video_ids()[:slot_count]
         default_role_by_video_id = {video_id: idx + 1 for idx, video_id in enumerate(default_video_ids)}
         default_audio_map = self._default_audio_assignments(video_ids)
         devices = []
 
         for idx, video_id in enumerate(video_ids):
+            video_name = self._camera_device_name(video_id)
             saved_assignment = saved.get(video_id)
             default_role = default_role_by_video_id.get(video_id, 0)
             default_audio_id = default_audio_map.get(video_id)
@@ -1052,6 +1212,7 @@ class DashboardWindow:
                 device_audio_choice_to_id[selected_audio_label] = audio_id
             device = {
                 "video_id": video_id,
+                "video_name": video_name,
                 "audio_id": audio_id,
                 "name": name,
                 "role_label": f"Camera {role}" if role else "Do not use",
@@ -1131,6 +1292,8 @@ class DashboardWindow:
                     video_id=assignment.video_id,
                     audio_id=assignment.audio_id,
                     name=f"Camera {role}" if assignment.name.startswith("Camera ") else assignment.name,
+                    video_name=assignment.video_name,
+                    audio_name=assignment.audio_name,
                 )
             )
 
@@ -1184,12 +1347,16 @@ class DashboardWindow:
                     role = src.id
                 if selected_role is not None and role == selected_role:
                     continue
+            audio_id = capture.audio_capture.device_id
+
             assignments.append(
                 CameraAssignment(
                     role=role,
                     video_id=capture.device_id,
-                    audio_id=capture.audio_capture.device_id,
+                    audio_id=audio_id,
                     name=self.display_names.get(src.id, src.name),
+                    video_name=self._camera_device_name(capture.device_id),
+                    audio_name=self._audio_name_map().get(audio_id, "") if audio_id is not None else "",
                 )
             )
         if selected_role is not None:
