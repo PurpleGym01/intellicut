@@ -2,19 +2,22 @@ from services.ingest import IngestService
 from services.analysis import AnalysisService, AudioActivityStrategy
 from services.switching import SwitchingEngine
 from services.render import FFmpegAdapter
-from services.audio_mix import mix_wav_files
 from services.audio_mux import mux_audio_video
-from pathlib import Path
+from services.clock import RecordingClock
+from services.timeline import Timeline
 from core.events import event_bus
-from models.domain import SwitchEvent, ScenePreset, SourceStatus
+from models.domain import ScenePreset, SourceStatus
 from utils.logger import logger_service
 from config.settings import config_service
 
+
 class IntellicutFacade:
     def __init__(self):
-        self.ingest = IngestService()
+        self.clock = RecordingClock()
+        self.timeline = Timeline()
+        self.ingest = IngestService(self.clock)
         self.analysis = AnalysisService(AudioActivityStrategy())
-        self.switching = SwitchingEngine()
+        self.switching = SwitchingEngine(self.clock)
         self.render = FFmpegAdapter()
         self.logger = logger_service.get_logger()
         self.is_running = False
@@ -34,6 +37,8 @@ class IntellicutFacade:
             return
         if reset:
             self.ingest.reset_scene()
+            self.clock.reset()
+            self.timeline.reset()
             self.switching.current_source_id = None
             self.switching.pending_source_id = None
             self.switching.pending_since = 0
@@ -68,43 +73,50 @@ class IntellicutFacade:
         if not self.render.start_recording(fps=int(getattr(config_service, "video_fps", 30) or 30)):
             self.logger.warning("Recording backend failed to start. Continuing without recording.")
         else:
+            self.timeline.reset()
+            self.ingest.clear_media_buffers()
             self.ingest.start_audio_recording(self.render.output_path, self.switching.current_source_id)
+            initial_source_id = self.switching.current_source_id or self.ingest.default_active_source_id()
+            self.clock.start()
+            self.timeline.open(initial_source_id, 0, "recording_start", 0.0)
         self.logger.info("System STARTED")
         event_bus.notify({"status": "started"})
 
     def stop(self):
         if not self.is_running:
             return
+        duration_ns = self.clock.now_ns() if self.clock.is_started else 0
         self.is_running = False
+        if self.clock.is_started:
+            self.render.write_timeline_frames(self.ingest, self.timeline, self.clock, up_to_ns=duration_ns)
+            if self.render._frame_count:
+                duration_ns = int((self.render._frame_count * 1_000_000_000) // max(self.render.fps, 1))
+            self.timeline.close(duration_ns)
         if self.ingest.audio_recording_active:
-            self.ingest.stop_audio_recording()
+            self.ingest.stop_audio_recording(self.timeline, duration_ns)
         video_path = self.render.stop_recording()
-        mix_success = False
+        audio_success = False
         mux_success = False
         if getattr(config_service, "record_audio", False) and video_path:
             audio_paths = list(self.ingest.audio_recording_paths or [])
             if audio_paths:
-                video_duration_sec = max(self.render._frame_count / max(self.render.fps, 1), 0.0)
-                mixed_path = str(Path(video_path).with_name(f"{Path(video_path).stem}_mix.wav"))
-                mixed = mix_wav_files(audio_paths, mixed_path, normalize=True, target_duration_sec=video_duration_sec)
-                if mixed:
-                    mix_success = True
-                    muxed = mux_audio_video(video_path, mixed)
-                    if muxed:
-                        mux_success = True
-                        self.render.last_output_path = muxed
-                        self.logger.info(f"Audio muxed into output: {muxed}")
-                    else:
-                        self.logger.warning("Audio mux failed; keeping video-only output")
+                audio_success = True
+                muxed = mux_audio_video(video_path, audio_paths[0])
+                if muxed:
+                    mux_success = True
+                    self.render.last_output_path = muxed
+                    self.logger.info(f"Audio muxed into output: {muxed}")
                 else:
-                    self.logger.warning("Audio mix failed; keeping video-only output")
+                    self.logger.warning("Audio mux failed; keeping video-only output")
             else:
-                self.logger.info("No audio files to mix; keeping video-only output")
+                self.logger.info("No timeline audio file to mux; keeping video-only output")
+
+        self.clock.stop()
 
         # Auto-cleanup temporary audio files if configured.
         if getattr(config_service, "auto_cleanup_audio_temp", False):
             cleanup_on_failure = bool(getattr(config_service, "auto_cleanup_audio_on_failure", False))
-            should_cleanup = mix_success and mux_success
+            should_cleanup = audio_success and mux_success
             if cleanup_on_failure:
                 should_cleanup = True
             if should_cleanup:
@@ -148,15 +160,25 @@ class IntellicutFacade:
             # 4. Рендер (Render)
             layout = "single" if event.preset == ScenePreset.SPEAKER else "split"
             self.render.switch_layout(layout)
+            if self.clock.is_started:
+                self.timeline.switch_to(
+                    event.to_source_id,
+                    self.clock.now_ns(),
+                    event.reason,
+                    scores.get(event.to_source_id, 0.0),
+                )
             # 5. Уведомление (Observer)
             event_bus.notify(event)
 
-        if self.ingest.audio_recording_active:
-            self.ingest.route_audio_recording(self.switching.current_source_id)
+    def record_frame(self):
+        if self.is_running and self.clock.is_started:
+            self.render.write_timeline_frames(self.ingest, self.timeline, self.clock)
 
     def manual_override(self, source_id: int, preset: ScenePreset = ScenePreset.SPEAKER):
         event = self.switching.manual_switch(source_id, preset)
         self.render.switch_layout(preset.value)
+        if self.clock.is_started:
+            self.timeline.switch_to(source_id, self.clock.now_ns(), event.reason, 0.0)
         event_bus.notify(event)
 
     def enable_auto(self):

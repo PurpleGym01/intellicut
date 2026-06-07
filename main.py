@@ -32,12 +32,11 @@ def main():
         except Exception:
             pass
         try:
-            # Сначала гасим все источники (видео/аудио), чтобы индикатор микрофона сразу отпускался.
-            system.ingest.stop_all()
+            system.stop()
         except Exception:
             pass
         try:
-            system.stop()
+            system.ingest.stop_all()
         except Exception:
             pass
 
@@ -63,7 +62,7 @@ def main():
                 system.switching.current_source_id,
                 system.ingest.emulation_mode
             )
-            system.render.write_frame(output_frame)
+            system.record_frame()
 
             if not should_continue:
                 print("\nStopping by user input...")

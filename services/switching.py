@@ -2,11 +2,13 @@ from models.domain import SwitchEvent, ScenePreset
 from config.settings import config_service
 from utils.logger import logger_service
 from typing import Optional
+from services.clock import RecordingClock
 import time
 
 
 class SwitchingEngine:
-    def __init__(self):
+    def __init__(self, clock: Optional[RecordingClock] = None):
+        self.clock = clock
         self.current_source_id: Optional[int] = None
         self.last_switch_time: float = 0
         self.pending_source_id: Optional[int] = None
@@ -14,16 +16,21 @@ class SwitchingEngine:
         self.mode_auto = True
         self.logger = logger_service.get_logger()
 
+    def _now_sec(self) -> float:
+        if self.clock is not None and self.clock.is_started:
+            return self.clock.now_ns() / 1_000_000_000
+        return time.monotonic()
+
     def decide(self, scores: dict, sources) -> Optional[SwitchEvent]:
         if not self.mode_auto:
             return None
         if not scores:
             return None
 
-        now = time.time()
+        now = self._now_sec()
 
         # Cooldown: жесткая пауза после последнего переключения.
-        if now - self.last_switch_time < config_service.cooldown:
+        if self.current_source_id is not None and now - self.last_switch_time < config_service.cooldown:
             return None
 
         best_source_id = max(scores, key=scores.get)
@@ -84,15 +91,16 @@ class SwitchingEngine:
         )
 
     def manual_switch(self, source_id: int, preset: ScenePreset = ScenePreset.SPEAKER) -> SwitchEvent:
+        prev_source_id = self.current_source_id
         self.mode_auto = False
         self.current_source_id = source_id
-        self.last_switch_time = time.time()
+        self.last_switch_time = self._now_sec()
         self.pending_source_id = None
         self.pending_since = 0
         self.logger.info(f"Manual switch to source {source_id}")
         return SwitchEvent(
-            timestamp=time.time(),
-            from_source_id=None,
+            timestamp=self._now_sec(),
+            from_source_id=prev_source_id,
             to_source_id=source_id,
             reason="manual_override",
             preset=preset

@@ -16,7 +16,8 @@ class ConfigService:
         self.audio_threshold = 0.03    # нормализованный порог
         self.switch_hysteresis = 0.02  # на сколько новый источник должен быть выше текущего
         self.switch_penalty = 0.02     # штраф за переключение в скоринге
-        self.max_sources = 3
+        self.default_camera_slots = 2
+        self.max_sources = 6
         self.camera_scan_max_index = 30
         # Целевой FPS записи видео.
         self.video_fps = 30
@@ -39,9 +40,8 @@ class ConfigService:
             # "Camera 1": 0,
             # "Camera 2": "iPhone Microphone",
         }
-        # Временный флаг для быстрой диагностики "перепутанных" микрофонов.
-        # Если True, первые два автоматически выбранных аудио-девайса меняются местами.
-        self.swap_first_two_audio_sources = True
+        # Сколько последних секунд медиа держать для timestamp-based выбора кадров/чанков.
+        self.media_buffer_seconds = 10.0
         # Включать ли запись аудио в финальный mp4.
         self.record_audio = True
         # Автоочистка временных аудио-файлов после остановки.

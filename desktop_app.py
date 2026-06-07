@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,6 +34,10 @@ BLUE = "#60a5fa"
 RED = "#f87171"
 YELLOW = "#facc15"
 DISABLED = "#656a73"
+CARD_GAP = 12
+CARD_SIDE_PAD = 28
+CARD_VERTICAL_CHROME = 166
+PREVIEW_ASPECT = 16 / 9
 
 
 @dataclass
@@ -43,12 +48,23 @@ class CameraAssignment:
     name: str
 
 
+@dataclass(frozen=True)
+class CameraGridLayout:
+    cols: int
+    rows: int
+    card_size: tuple[int, int]
+    preview_size: tuple[int, int]
+    top_pad: int = 0
+    gap: int = CARD_GAP
+
+
 class UserSettings:
     def __init__(self):
         self.path = Path.home() / ".intellicut" / "settings.json"
         self.data = {
             "camera_roles": {},
             "camera_roles_configured": False,
+            "camera_slot_count": config_service.default_camera_slots,
             "output_folder": str(Path(config_service.output_path).parent),
         }
         self.load()
@@ -74,6 +90,20 @@ class UserSettings:
         self.data["output_folder"] = folder
         config_service.output_path = str(Path(folder) / Path(config_service.output_path).name)
         self.save()
+
+    def camera_slot_count(self) -> int:
+        try:
+            configured = int(self.data.get("camera_slot_count", config_service.default_camera_slots))
+        except Exception:
+            configured = config_service.default_camera_slots
+        count = max(config_service.default_camera_slots, configured)
+        return min(config_service.max_sources, count)
+
+    def set_camera_slot_count(self, count: int, save: bool = True):
+        count = max(config_service.default_camera_slots, min(config_service.max_sources, int(count)))
+        self.data["camera_slot_count"] = count
+        if save:
+            self.save()
 
     def assignments(self) -> list[CameraAssignment]:
         roles = self.data.get("camera_roles") or {}
@@ -106,6 +136,8 @@ class UserSettings:
             }
         self.data["camera_roles"] = roles
         self.data["camera_roles_configured"] = True
+        max_role = max((assignment.role for assignment in assignments), default=0)
+        self.data["camera_slot_count"] = max(self.camera_slot_count(), max_role, config_service.default_camera_slots)
         self.save()
 
 
@@ -166,60 +198,69 @@ class StatusBadge(tk.Label):
 
 
 class CameraCard(tk.Frame):
-    def __init__(self, master, role_index: int, identify_callback, role_change_callback):
+    def __init__(self, master, role_index: int, role_change_callback, remove_callback):
         super().__init__(master, bg=CARD_BG, highlightthickness=1, highlightbackground=LINE)
         self.role_index = role_index
-        self.identify_callback = identify_callback
         self.role_change_callback = role_change_callback
+        self.remove_callback = remove_callback
         self.photo = None
-        self.identify_until = 0.0
         self.source = None
         self._updating_role = False
+        self.card_size = (408, 320)
+        self.preview_size = (316, 178)
+        self.configure(width=self.card_size[0], height=self.card_size[1])
+        self.pack_propagate(False)
 
         self.header = tk.Frame(self, bg=CARD_BG)
-        self.header.pack(fill=tk.X, padx=14, pady=(12, 8))
+        self.header.pack(fill=tk.X, padx=12, pady=(6, 4))
 
         self.role_label = tk.Label(self.header, text=f"Camera {role_index}", bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", 15, "bold"))
         self.role_label.pack(side=tk.LEFT)
 
         self.badge = tk.Label(self.header, text="", bg=CARD_BG, fg=GREEN, font=("Helvetica Neue", 10, "bold"))
-        self.badge.pack(side=tk.RIGHT)
+        self.badge.pack(side=tk.LEFT, padx=(8, 0))
 
-        self.preview = tk.Label(self, bg="#161719", height=210)
-        self.preview.pack(fill=tk.BOTH, expand=True, padx=14)
+        self.remove_button = styled_button(self.header, "Remove", self._remove, bg="#4a2c2c", active="#633838")
+        self.remove_button.pack(side=tk.RIGHT)
+
+        self.preview_shell = tk.Frame(self, bg="#161719", width=self.preview_size[0], height=self.preview_size[1])
+        self.preview_shell.pack(anchor="center", padx=12)
+        self.preview_shell.pack_propagate(False)
+        self.preview = tk.Label(self.preview_shell, bg="#161719", bd=0, highlightthickness=0)
+        self.preview.place(relx=0.5, rely=0.5, anchor="center")
 
         self.name_label = tk.Label(self, text="Name: -", bg=CARD_BG, fg=TEXT, anchor="w", font=("Helvetica Neue", 11))
-        self.name_label.pack(fill=tk.X, padx=14, pady=(10, 2))
-
-        self.device_label = tk.Label(self, text="Device: -", bg=CARD_BG, fg=MUTED, anchor="w", font=("Helvetica Neue", 10))
-        self.device_label.pack(fill=tk.X, padx=14, pady=2)
+        self.name_label.pack(fill=tk.X, padx=12, pady=(6, 0))
 
         role_row = tk.Frame(self, bg=CARD_BG)
-        role_row.pack(fill=tk.X, padx=14, pady=(8, 2))
+        role_row.pack(fill=tk.X, padx=12, pady=(4, 0))
         self.role_row = role_row
         tk.Label(role_row, text="Role", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", 10)).pack(side=tk.LEFT)
         self.role_var = tk.StringVar(value=f"Camera {role_index}")
         self.role_dropdown = dark_option_menu(
             role_row,
             self.role_var,
-            ["Camera 1", "Camera 2", "Camera 3", "Do not use"],
+            [f"Camera {i}" for i in range(1, config_service.max_sources + 1)] + ["Do not use"],
             self._on_role_changed,
         )
         self.role_dropdown.pack(side=tk.RIGHT)
 
         self.audio_text = tk.Label(self, text="Audio level: 0%", bg=CARD_BG, fg=MUTED, anchor="w", font=("Helvetica Neue", 10))
-        self.audio_text.pack(fill=tk.X, padx=14, pady=(8, 4))
+        self.audio_text.pack(fill=tk.X, padx=12, pady=(4, 2))
 
         self.meter = ttk.Progressbar(self, maximum=100, mode="determinate")
         self.meter.configure(style="Audio.Horizontal.TProgressbar")
-        self.meter.pack(fill=tk.X, padx=14, pady=(0, 12))
+        self.meter.pack(fill=tk.X, padx=12, pady=(0, 6))
 
-        self.identify_button = styled_button(self, "Identify", self.identify)
-        self.identify_button.pack(anchor="w", padx=14, pady=(0, 14))
+    def set_layout(self, card_size, preview_size, can_remove: bool):
+        self.card_size = card_size
+        self.preview_size = preview_size
+        self.configure(width=card_size[0], height=card_size[1])
+        self.preview_shell.configure(width=preview_size[0], height=preview_size[1])
+        self.remove_button.configure(state=tk.NORMAL if can_remove else tk.DISABLED)
 
-    def identify(self):
-        self.identify_until = time.time() + 3.0
-        self.identify_callback(self.role_index)
+    def _remove(self):
+        self.remove_callback(self.role_index)
 
     def _on_role_changed(self, event=None):
         del event
@@ -232,7 +273,7 @@ class CameraCard(tk.Frame):
         bg = CARD_ACTIVE if is_active else CARD_BG
         border = GREEN if is_active else LINE
         self.configure(bg=bg, highlightbackground=border, highlightthickness=2 if is_active else 1)
-        for child in (self.header, self.role_label, self.badge, self.name_label, self.device_label, self.role_row, self.audio_text):
+        for child in (self.header, self.role_label, self.badge, self.name_label, self.role_row, self.audio_text):
             child.configure(bg=bg)
         for child in self.role_row.winfo_children():
             if isinstance(child, tk.Label):
@@ -241,34 +282,45 @@ class CameraCard(tk.Frame):
         role_text = source.name if source else f"Camera {self.role_index}"
         self.role_label.configure(text=role_text)
         self._updating_role = True
-        self.role_var.set(role_text if role_text in ("Camera 1", "Camera 2", "Camera 3") else f"Camera {self.role_index}")
+        allowed_roles = {f"Camera {i}" for i in range(1, config_service.max_sources + 1)}
+        self.role_var.set(role_text if role_text in allowed_roles else f"Camera {self.role_index}")
         self._updating_role = False
-        self.badge.configure(text="Active speaker" if is_active else "")
+        self.badge.configure(text="Active" if is_active else "")
         self.name_label.configure(text=f"Name: {display_name or role_text}")
-        self.device_label.configure(text=f"Device: {device_name or 'Unavailable'}")
 
         level = int((source.audio_level if source else 0.0) * 100)
         self.audio_text.configure(text=f"Audio level: {level}%")
         self.meter["value"] = level
 
+        preview_w, preview_h = self._current_preview_size()
         if frame is None:
-            frame = np.zeros((240, 360, 3), dtype=np.uint8)
+            frame = np.zeros((preview_h, preview_w, 3), dtype=np.uint8)
             message = status_text or "Camera unavailable"
-            cv2.putText(frame, message, (24, 118), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 160, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, message, (18, preview_h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (120, 160, 255), 2, cv2.LINE_AA)
         else:
-            frame = self._resize_cover(frame, 520, 292)
-
-        if time.time() < self.identify_until:
-            cv2.rectangle(frame, (0, 0), (frame.shape[1] - 1, frame.shape[0] - 1), (80, 220, 120), 8)
-            cv2.putText(frame, role_text.upper(), (42, frame.shape[0] // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 4, cv2.LINE_AA)
+            frame = self._resize_contain(frame, preview_w, preview_h)
 
         self.photo = frame_to_photo(frame)
         self.preview.configure(image=self.photo)
 
+    def _current_preview_size(self):
+        return self.preview_size
+
     @staticmethod
-    def _resize_cover(frame, width: int, height: int):
-        frame = ConsoleUI._trim_black_bars(frame)
-        return ConsoleUI._resize_cover(frame, target_w=width, target_h=height)
+    def _resize_contain(frame, width: int, height: int):
+        if frame is None or frame.size == 0:
+            return frame
+        src_h, src_w = frame.shape[:2]
+        scale = min(width / src_w, height / src_h)
+        target_w = max(1, int(round(src_w * scale)))
+        target_h = max(1, int(round(src_h * scale)))
+        interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+        resized = cv2.resize(frame, (target_w, target_h), interpolation=interpolation)
+        canvas = np.zeros((height, width, 3), dtype=frame.dtype)
+        x0 = (width - target_w) // 2
+        y0 = (height - target_h) // 2
+        canvas[y0:y0 + target_h, x0:x0 + target_w] = resized
+        return canvas
 
 
 class OutputPanel(tk.Frame):
@@ -323,7 +375,10 @@ class ControlPanel(tk.Frame):
         self.setup_button = styled_button(self, "Setup cameras", callbacks["setup"])
         self.setup_button.pack(fill=tk.X, padx=16, pady=5)
 
-        self.auto_button = styled_button(self, "Auto assign by audio", callbacks["auto_assign"])
+        self.add_camera_button = styled_button(self, "Add camera", callbacks["add_camera"])
+        self.add_camera_button.pack(fill=tk.X, padx=16, pady=5)
+
+        self.auto_button = styled_button(self, "Reset default devices", callbacks["auto_assign"])
         self.auto_button.pack(fill=tk.X, padx=16, pady=5)
 
         self.debug_button = styled_button(self, "Show logs", callbacks["logs"])
@@ -333,16 +388,15 @@ class ControlPanel(tk.Frame):
         self.start_button.configure(state=tk.DISABLED if recording else tk.NORMAL)
         self.stop_button.configure(state=tk.NORMAL if recording else tk.DISABLED)
         self.setup_button.configure(state=tk.DISABLED if recording else tk.NORMAL)
+        self.add_camera_button.configure(state=tk.DISABLED if recording else tk.NORMAL)
         self.auto_button.configure(state=tk.DISABLED if recording else tk.NORMAL)
 
 
 class SetupCameraCard(tk.Frame):
-    def __init__(self, master, device, roles, on_identify):
+    def __init__(self, master, device, roles):
         super().__init__(master, bg=CARD_BG, highlightthickness=1, highlightbackground=LINE)
         self.device = device
         self.photo = None
-        self.identify_until = 0
-        self.on_identify = on_identify
 
         self.title = tk.Label(self, text=device["device_label"], bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", 13, "bold"))
         self.title.pack(anchor="w", padx=14, pady=(12, 6))
@@ -354,7 +408,15 @@ class SetupCameraCard(tk.Frame):
         self.name_var = tk.StringVar(value=device["name"])
         tk.Entry(self, textvariable=self.name_var, bg="#24262b", fg=TEXT, insertbackground=TEXT, relief=tk.FLAT).pack(fill=tk.X, padx=14, pady=(2, 8))
 
-        tk.Label(self, text=f"Audio: {device['audio_label']}", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", 10), wraplength=250, justify=tk.LEFT).pack(anchor="w", padx=14, pady=(0, 6))
+        tk.Label(self, text="Microphone", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", 10)).pack(anchor="w", padx=14)
+        self.audio_choice_to_id = dict(device["audio_choice_to_id"])
+        self.audio_device_var = tk.StringVar(value=device["audio_label"])
+        dark_option_menu(
+            self,
+            self.audio_device_var,
+            device["audio_choice_labels"],
+            self._on_audio_changed,
+        ).pack(fill=tk.X, padx=14, pady=(2, 8))
 
         self.audio_var = tk.StringVar(value="Audio level: 0%")
         tk.Label(self, textvariable=self.audio_var, bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", 10)).pack(anchor="w", padx=14)
@@ -365,11 +427,15 @@ class SetupCameraCard(tk.Frame):
         self.role_var = tk.StringVar(value=device["role_label"])
         dark_option_menu(self, self.role_var, roles).pack(fill=tk.X, padx=14, pady=(0, 10))
 
-        styled_button(self, "Identify", self.identify).pack(anchor="w", padx=14, pady=(0, 14))
+    def _on_audio_changed(self, label: str):
+        audio_id = self.audio_choice_to_id.get(label)
+        self.device["set_audio_id"](audio_id)
 
-    def identify(self):
-        self.identify_until = time.time() + 3
-        self.on_identify(self.device)
+    def reset_to_default(self):
+        self.role_var.set(self.device["default_role_label"])
+        self.name_var.set(self.device["default_name"])
+        self.device["set_audio_id"](self.device["default_audio_id"])
+        self.audio_device_var.set(self.device["audio_label"])
 
     def update_preview(self):
         frame = self.device["get_frame"]()
@@ -378,11 +444,6 @@ class SetupCameraCard(tk.Frame):
             cv2.putText(frame, "Unavailable", (48, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (120, 160, 255), 2, cv2.LINE_AA)
         else:
             frame = ConsoleUI._resize_cover(ConsoleUI._trim_black_bars(frame), target_w=300, target_h=190)
-
-        if time.time() < self.identify_until:
-            label = self.role_var.get().upper()
-            cv2.rectangle(frame, (0, 0), (frame.shape[1] - 1, frame.shape[0] - 1), (80, 220, 120), 7)
-            cv2.putText(frame, label, (30, frame.shape[0] // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 3, cv2.LINE_AA)
 
         self.photo = frame_to_photo(frame)
         self.preview.configure(image=self.photo)
@@ -415,7 +476,7 @@ class CameraSetupDialog(tk.Toplevel):
         self.devices = devices
 
         tk.Label(self, text="Setup cameras", bg=APP_BG, fg=TEXT, font=("Helvetica Neue", 24, "bold")).pack(anchor="w", padx=22, pady=(18, 4))
-        tk.Label(self, text="Assign each device to Camera 1, Camera 2, Camera 3, or do not use it.", bg=APP_BG, fg=MUTED, font=("Helvetica Neue", 12)).pack(anchor="w", padx=22)
+        tk.Label(self, text=f"Assign devices to camera slots. Up to {config_service.max_sources} cameras are supported.", bg=APP_BG, fg=MUTED, font=("Helvetica Neue", 12)).pack(anchor="w", padx=22)
 
         body = tk.Frame(self, bg=APP_BG)
         body.pack(fill=tk.BOTH, expand=True, padx=22, pady=18)
@@ -427,24 +488,27 @@ class CameraSetupDialog(tk.Toplevel):
             tk.Label(empty, text="No cameras found", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", 18, "bold")).pack(pady=(120, 8))
             tk.Label(empty, text="Check camera permissions or connect a device.", bg=PANEL_BG, fg=MUTED, font=("Helvetica Neue", 12)).pack()
         else:
+            setup_cols = min(3, max(1, len(devices)))
             for idx, device in enumerate(devices):
-                card = SetupCameraCard(body, device, roles, self._identify)
-                card.grid(row=0, column=idx, sticky="nsew", padx=(0, 14))
-                body.columnconfigure(idx, weight=1)
+                card = SetupCameraCard(body, device, roles)
+                row = idx // setup_cols
+                col = idx % setup_cols
+                card.grid(row=row, column=col, sticky="nsew", padx=(0 if col == 0 else 12, 0), pady=(0 if row == 0 else 12, 0))
                 self.cards.append(card)
+            for col in range(setup_cols):
+                body.columnconfigure(col, weight=1, uniform="setup_cols")
+            for row in range((len(devices) + setup_cols - 1) // setup_cols):
+                body.rowconfigure(row, weight=1, uniform="setup_rows")
 
         footer = tk.Frame(self, bg=APP_BG)
         footer.pack(fill=tk.X, padx=22, pady=(0, 18))
-        styled_button(footer, "Auto assign by audio level", self.auto_assign).pack(side=tk.LEFT)
+        styled_button(footer, "Reset default devices", self.reset_default_devices).pack(side=tk.LEFT)
         styled_button(footer, "Cancel", self.cancel).pack(side=tk.RIGHT, padx=(8, 0))
         styled_button(footer, "Save", self.save, bg="#2f6f4e", active="#3b875f").pack(side=tk.RIGHT)
 
         self.protocol("WM_DELETE_WINDOW", self.cancel)
         self.after(60, self._update_loop)
         self.grab_set()
-
-    def _identify(self, device):
-        device["identify_until"] = time.time() + 3
 
     def _update_loop(self):
         if not self.winfo_exists():
@@ -454,12 +518,9 @@ class CameraSetupDialog(tk.Toplevel):
                 card.update_preview()
         self.after(80, self._update_loop)
 
-    def auto_assign(self):
-        ordered = sorted(self.cards, key=lambda card: card.device["get_audio_level"](), reverse=True)
+    def reset_default_devices(self):
         for card in self.cards:
-            card.role_var.set("Do not use")
-        for idx, card in enumerate(ordered[:3], start=1):
-            card.role_var.set(f"Camera {idx}")
+            card.reset_to_default()
 
     def save(self):
         assignments = []
@@ -499,6 +560,7 @@ class DashboardWindow:
         self.camera_cards: list[CameraCard] = []
         self.display_names = {}
         self.device_names = {}
+        self.source_id_by_role = {}
         self.setup_devices = []
 
         self._install_log_handler()
@@ -527,9 +589,8 @@ class DashboardWindow:
         self.camera_grid = tk.Frame(content, bg=APP_BG)
         self.camera_grid.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
         for idx in range(config_service.max_sources):
-            self.camera_grid.columnconfigure(idx, weight=1)
-            card = CameraCard(self.camera_grid, idx + 1, self._identify_role, self.change_card_role)
-            card.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 10, 0))
+            self.camera_grid.columnconfigure(idx % 3, weight=1)
+            card = CameraCard(self.camera_grid, idx + 1, self.change_card_role, self.remove_camera_slot)
             self.camera_cards.append(card)
 
         side = tk.Frame(content, bg=APP_BG, width=360)
@@ -542,7 +603,8 @@ class DashboardWindow:
                 "start": self.start,
                 "stop": self.stop,
                 "setup": self.open_setup,
-                "auto_assign": self.auto_assign_by_audio,
+                "add_camera": self.add_camera_slot,
+                "auto_assign": self.reset_default_devices,
                 "logs": self.show_logs,
             },
         )
@@ -579,29 +641,175 @@ class DashboardWindow:
         self.system.ingest.reset_scene()
         self.system.scene_configured = False
         discovered = set(self.system.ingest.discovered_video_devices)
-        assignments = [item for item in self.settings.assignments() if item.video_id in discovered]
+        slot_count = self.settings.camera_slot_count()
+        assignments = [
+            item
+            for item in self.settings.assignments()
+            if item.video_id in discovered and 1 <= item.role <= slot_count
+        ]
 
         if not assignments and not self.settings.data.get("camera_roles_configured"):
-            assignments = self._default_assignments()
+            assignments = self._default_assignments(slot_count)
             self.settings.save_assignments(assignments)
+        else:
+            completed = self._fill_missing_slot_assignments(assignments, slot_count)
+            if completed != assignments:
+                assignments = completed
+                self.settings.save_assignments(assignments)
 
         source_names = [f"Camera {item.role}" for item in assignments]
         video_ids = [item.video_id for item in assignments]
         audio_ids = [item.audio_id for item in assignments]
         self.display_names = {idx + 1: item.name for idx, item in enumerate(assignments)}
-        self.device_names = {idx + 1: self._camera_device_name(item.video_id) for idx, item in enumerate(assignments)}
+        self.source_id_by_role = {item.role: idx + 1 for idx, item in enumerate(assignments)}
 
         if source_names:
             self.system.setup_scene(source_names, reset=False, video_device_ids=video_ids, audio_device_ids=audio_ids)
 
-    def _default_assignments(self):
-        video_ids = self.system.ingest.discovered_video_devices[: config_service.max_sources]
-        audio_ids = list(self.system.ingest.auto_audio_device_queue)
+    def _fill_missing_slot_assignments(self, assignments: list[CameraAssignment], slot_count: int):
+        by_role = {assignment.role: assignment for assignment in assignments}
+        used_video_ids = {assignment.video_id for assignment in assignments}
+        for role in range(1, slot_count + 1):
+            if role in by_role:
+                continue
+            assignment = self._default_assignment_for_role(role, used_video_ids)
+            if assignment is None:
+                continue
+            by_role[role] = assignment
+            used_video_ids.add(assignment.video_id)
+        return sorted(by_role.values(), key=lambda item: item.role)
+
+    def _available_video_ids(self):
+        return self.system.ingest.discovered_video_devices[: config_service.max_sources]
+
+    def _default_assignments(self, slot_count: int | None = None):
+        slot_count = self.settings.camera_slot_count() if slot_count is None else slot_count
+        video_ids = self._available_video_ids()[: min(slot_count, config_service.max_sources)]
+        audio_map = self._default_audio_assignments(video_ids)
         assignments = []
         for idx, video_id in enumerate(video_ids, start=1):
-            audio_id = audio_ids[idx - 1] if idx - 1 < len(audio_ids) else None
-            assignments.append(CameraAssignment(role=idx, video_id=video_id, audio_id=audio_id, name=f"Camera {idx}"))
+            audio_id = audio_map.get(video_id)
+            assignments.append(
+                CameraAssignment(
+                    role=idx,
+                    video_id=video_id,
+                    audio_id=audio_id,
+                    name=f"Camera {idx}",
+                )
+            )
         return assignments
+
+    def _default_assignment_for_role(self, role: int, used_video_ids=None):
+        used_video_ids = used_video_ids or set()
+        video_ids = self._available_video_ids()
+        preferred = video_ids[role - 1] if 0 <= role - 1 < len(video_ids) else None
+        if preferred in used_video_ids:
+            preferred = None
+        video_id = preferred
+        if video_id is None:
+            video_id = next((item for item in video_ids if item not in used_video_ids), None)
+        if video_id is None:
+            return None
+        audio_map = self._default_audio_assignments(video_ids)
+        return CameraAssignment(
+            role=role,
+            video_id=video_id,
+            audio_id=audio_map.get(video_id),
+            name=f"Camera {role}",
+        )
+
+    def _default_audio_assignments(self, video_ids):
+        audio_devices = list(self.system.ingest.audio_input_devices)
+        audio_queue = list(self.system.ingest.auto_audio_device_queue)
+        assignments = {}
+        used_audio_ids = set()
+
+        for fallback_idx, video_id in enumerate(video_ids):
+            camera_name = self._camera_device_name(video_id)
+            audio_id = self._match_audio_device_by_name(camera_name, audio_devices, used_audio_ids)
+            if audio_id is None:
+                audio_id = self._fallback_audio_id(audio_queue, used_audio_ids, fallback_idx)
+            assignments[video_id] = audio_id
+            if audio_id is not None:
+                used_audio_ids.add(audio_id)
+        return assignments
+
+    def _fallback_audio_id(self, audio_queue, used_audio_ids, preferred_idx: int):
+        if preferred_idx < len(audio_queue) and audio_queue[preferred_idx] not in used_audio_ids:
+            return audio_queue[preferred_idx]
+        for audio_id in audio_queue:
+            if audio_id not in used_audio_ids:
+                return audio_id
+        return None
+
+    def _match_audio_device_by_name(self, camera_name: str, audio_devices, used_audio_ids):
+        camera_norm = self._normalize_device_name(camera_name)
+        camera_tokens = self._device_name_tokens(camera_norm)
+        best_audio_id = None
+        best_score = 0
+
+        for audio_device in audio_devices:
+            audio_id = audio_device["index"]
+            if audio_id in used_audio_ids:
+                continue
+            audio_name = str(audio_device.get("name", ""))
+            audio_norm = self._normalize_device_name(audio_name)
+            audio_tokens = self._device_name_tokens(audio_norm)
+            score = self._device_match_score(camera_norm, audio_norm, camera_tokens, audio_tokens)
+            if score > best_score:
+                best_score = score
+                best_audio_id = audio_id
+
+        return best_audio_id if best_score >= 20 else None
+
+    @staticmethod
+    def _normalize_device_name(name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(name).lower()).strip()
+
+    @staticmethod
+    def _device_name_tokens(normalized_name: str):
+        stopwords = {
+            "audio",
+            "avfoundation",
+            "camera",
+            "default",
+            "device",
+            "external",
+            "hd",
+            "input",
+            "microphone",
+            "mic",
+            "pro",
+            "video",
+        }
+        return {
+            token
+            for token in normalized_name.split()
+            if len(token) >= 3 and token not in stopwords and not token.isdigit()
+        }
+
+    def _device_match_score(self, camera_norm: str, audio_norm: str, camera_tokens, audio_tokens) -> int:
+        score = 0
+        if "iphone" in camera_tokens or "continuity" in camera_tokens:
+            if "iphone" in audio_tokens:
+                score += 100
+            if "continuity" in audio_tokens:
+                score += 70
+        if "ipad" in camera_tokens:
+            if "ipad" in audio_tokens:
+                score += 100
+            if "continuity" in audio_tokens:
+                score += 60
+        if camera_tokens.intersection({"macbook", "facetime", "builtin", "built"}):
+            if audio_tokens.intersection({"macbook", "builtin", "built", "internal"}):
+                score += 100
+        overlap = camera_tokens & audio_tokens
+        score += len(overlap) * 15
+        if len(camera_norm) > 5 and camera_norm in audio_norm:
+            score += 30
+        if len(audio_norm) > 5 and audio_norm in camera_norm:
+            score += 30
+        return score
 
     def _camera_device_name(self, video_id: int):
         names = self._ffmpeg_video_names()
@@ -642,8 +850,7 @@ class DashboardWindow:
         try:
             if self.system.is_running:
                 self.system.tick()
-                frame = self._selected_output_frame()
-                self.system.render.write_frame(frame)
+                self.system.record_frame()
             self._update_camera_cards()
             self._update_output_panel()
         except Exception as exc:
@@ -671,23 +878,95 @@ class DashboardWindow:
 
     def _update_camera_cards(self):
         sources = self.system.ingest.get_sources()
-        if not sources:
-            self.empty_panel.place(relx=0.5, rely=0.45, anchor="center")
-        else:
-            self.empty_panel.place_forget()
+        self.empty_panel.place_forget()
 
         active_id = self.system.switching.current_source_id
+        slot_count = self.settings.camera_slot_count()
+        if not self.system.is_running:
+            add_state = tk.NORMAL if slot_count < config_service.max_sources else tk.DISABLED
+            self.control_panel.add_camera_button.configure(state=add_state)
+        layout = self._camera_grid_layout(slot_count)
+        can_remove = slot_count > config_service.default_camera_slots
+        for col in range(3):
+            self.camera_grid.columnconfigure(
+                col,
+                weight=1 if col < layout.cols else 0,
+                minsize=layout.card_size[0] if col < layout.cols else 0,
+                uniform="camera_cols" if col < layout.cols else "",
+            )
+        for row in range(2):
+            self.camera_grid.rowconfigure(
+                row,
+                weight=0,
+                minsize=layout.card_size[1] if row < layout.rows else 0,
+                uniform="",
+            )
+
         for idx, card in enumerate(self.camera_cards):
-            if idx < len(sources):
-                source = sources[idx]
-                frame = self.system.ingest.get_frame(idx)
-                device_name = self.device_names.get(source.id, f"Camera device {idx + 1}")
-                display_name = self.display_names.get(source.id, source.name)
-                status = "" if source.status.value == "active" else "Camera unavailable"
-                card.update_card(source, frame, display_name, device_name, source.id == active_id, status)
-                card.grid()
+            if idx < slot_count:
+                role = idx + 1
+                source_id = self.source_id_by_role.get(role)
+                source = sources[source_id - 1] if source_id is not None and 0 <= source_id - 1 < len(sources) else None
+                frame = self.system.ingest.get_frame(source_id - 1) if source is not None else None
+                if source is not None:
+                    device_name = self.device_names.get(source.id, f"Camera device {idx + 1}")
+                    display_name = self.display_names.get(source.id, source.name)
+                    status = "" if source.status.value == "active" else "Camera unavailable"
+                    is_active = source.id == active_id
+                else:
+                    device_name = "No camera assigned"
+                    display_name = f"Camera {role}"
+                    status = "No camera assigned"
+                    is_active = False
+                card.set_layout(layout.card_size, layout.preview_size, can_remove)
+                card.update_card(source, frame, display_name, device_name, is_active, status)
+                row, col, columnspan = self._camera_grid_position(idx, slot_count, layout.cols)
+                padx = (layout.gap if col > 0 and columnspan == 1 else 0, 0)
+                pady = (layout.top_pad if row == 0 else layout.gap, 0)
+                card.grid(row=row, column=col, columnspan=columnspan, sticky="n", padx=padx, pady=pady)
             else:
                 card.grid_remove()
+
+    def _camera_grid_layout(self, slot_count: int) -> CameraGridLayout:
+        cols = 2 if slot_count <= 4 else 3
+        rows = max(1, (slot_count + cols - 1) // cols)
+        grid_w = self.camera_grid.winfo_width()
+        grid_h = self.camera_grid.winfo_height()
+        if grid_w < 300:
+            grid_w = 858
+        if grid_h < 300:
+            grid_h = 660
+
+        target_card_w = 408 if cols == 2 else 270
+        target_card_h = 390 if slot_count == 2 else 324 if cols == 2 else 316
+        top_pad = 48 if slot_count == 2 else 0
+
+        max_card_w = max(220, int((grid_w - CARD_GAP * (cols - 1)) / cols))
+        max_card_h = max(240, int((grid_h - top_pad - CARD_GAP * (rows - 1)) / rows))
+        card_w = min(target_card_w, max_card_w)
+        card_h = min(target_card_h, max_card_h)
+
+        preview_max_w = max(160, card_w - CARD_SIDE_PAD)
+        preview_max_h = max(90, card_h - CARD_VERTICAL_CHROME)
+        preview_w = min(preview_max_w, int(preview_max_h * PREVIEW_ASPECT))
+        preview_h = max(90, int(round(preview_w / PREVIEW_ASPECT)))
+        if preview_h > preview_max_h:
+            preview_h = preview_max_h
+            preview_w = int(round(preview_h * PREVIEW_ASPECT))
+
+        return CameraGridLayout(
+            cols=cols,
+            rows=rows,
+            card_size=(card_w, card_h),
+            preview_size=(preview_w, preview_h),
+            top_pad=top_pad,
+        )
+
+    @staticmethod
+    def _camera_grid_position(idx: int, slot_count: int, cols: int):
+        if slot_count == 3 and idx == 2:
+            return 1, 0, 2
+        return idx // cols, idx % cols, 1
 
     def start(self):
         if self.system.is_running:
@@ -743,33 +1022,122 @@ class DashboardWindow:
     def _build_setup_devices(self):
         audio_devices = self.system.ingest.audio_input_devices
         audio_names = {item["index"]: item["name"] for item in audio_devices}
-        audio_queue = list(self.system.ingest.auto_audio_device_queue)
+        audio_choice_labels = ["No audio"] + [f"[{item['index']}] {item['name']}" for item in audio_devices]
+        audio_choice_to_id = {"No audio": None}
+        for item in audio_devices:
+            audio_choice_to_id[f"[{item['index']}] {item['name']}"] = item["index"]
         saved = {item.video_id: item for item in self.settings.assignments()}
+        slot_count = self.settings.camera_slot_count()
+        video_ids = self.system.ingest.discovered_video_devices[: config_service.max_sources]
+        default_video_ids = self._available_video_ids()[:slot_count]
+        default_role_by_video_id = {video_id: idx + 1 for idx, video_id in enumerate(default_video_ids)}
+        default_audio_map = self._default_audio_assignments(video_ids)
         devices = []
 
-        for idx, video_id in enumerate(self.system.ingest.discovered_video_devices[: config_service.max_sources]):
+        for idx, video_id in enumerate(video_ids):
             saved_assignment = saved.get(video_id)
-            audio_id = saved_assignment.audio_id if saved_assignment else (audio_queue[idx] if idx < len(audio_queue) else None)
+            default_role = default_role_by_video_id.get(video_id, 0)
+            default_audio_id = default_audio_map.get(video_id)
+            audio_id = saved_assignment.audio_id if saved_assignment else default_audio_id
             cap = self._open_temp_camera(video_id)
-            mic = MicrophoneCapture(f"setup video {video_id}", audio_id)
-            mic.start()
-            role = saved_assignment.role if saved_assignment else idx + 1
-            name = saved_assignment.name if saved_assignment else f"Camera {role}"
-            devices.append(
-                {
-                    "video_id": video_id,
-                    "audio_id": audio_id,
-                    "name": name,
-                    "role_label": f"Camera {role}" if role else "Do not use",
-                    "device_label": self._camera_device_name(video_id),
-                    "audio_label": audio_names.get(audio_id, "Audio unavailable") if audio_id is not None else "Audio unavailable",
-                    "cap": cap,
-                    "mic": mic,
-                    "get_frame": lambda cap=cap: read_cap_frame(cap),
-                    "get_audio_level": lambda mic=mic: mic.get_level() if mic else 0.0,
-                }
-            )
+            mic = self._open_setup_mic(video_id, audio_id)
+            role = saved_assignment.role if saved_assignment else default_role
+            default_name = f"Camera {default_role}" if default_role else f"Camera {idx + 1}"
+            name = saved_assignment.name if saved_assignment else default_name
+            selected_audio_label = self._setup_audio_label(audio_id, audio_names)
+            device_audio_choice_labels = list(audio_choice_labels)
+            device_audio_choice_to_id = dict(audio_choice_to_id)
+            if selected_audio_label not in device_audio_choice_to_id:
+                device_audio_choice_labels.append(selected_audio_label)
+                device_audio_choice_to_id[selected_audio_label] = audio_id
+            device = {
+                "video_id": video_id,
+                "audio_id": audio_id,
+                "name": name,
+                "role_label": f"Camera {role}" if role else "Do not use",
+                "default_role_label": f"Camera {default_role}" if default_role else "Do not use",
+                "default_name": default_name,
+                "default_audio_id": default_audio_id,
+                "device_label": self._camera_device_name(video_id),
+                "audio_label": selected_audio_label,
+                "audio_choice_labels": device_audio_choice_labels,
+                "audio_choice_to_id": device_audio_choice_to_id,
+                "audio_names": audio_names,
+                "cap": cap,
+                "mic": mic,
+                "get_frame": lambda cap=cap: read_cap_frame(cap),
+            }
+            device["set_audio_id"] = lambda audio_id, device=device: self._set_setup_audio_device(device, audio_id)
+            device["get_audio_level"] = lambda device=device: device["mic"].get_level() if device.get("mic") else 0.0
+            devices.append(device)
         return devices
+
+    def _setup_audio_label(self, audio_id, audio_names):
+        if audio_id is None:
+            return "No audio"
+        return f"[{audio_id}] {audio_names.get(audio_id, 'Unknown audio')}"
+
+    def _open_setup_mic(self, video_id, audio_id):
+        if audio_id is None:
+            return None
+        mic = MicrophoneCapture(f"setup video {video_id}", audio_id)
+        mic.start()
+        return mic
+
+    def _set_setup_audio_device(self, device, audio_id):
+        old_mic = device.get("mic")
+        if old_mic:
+            old_mic.stop()
+        device["audio_id"] = audio_id
+        device["audio_label"] = self._setup_audio_label(audio_id, device["audio_names"])
+        device["mic"] = self._open_setup_mic(device["video_id"], audio_id)
+
+    def add_camera_slot(self):
+        if self.system.is_running:
+            return
+        current_count = self.settings.camera_slot_count()
+        if current_count >= config_service.max_sources:
+            messagebox.showinfo("Camera limit", f"Maximum camera count is {config_service.max_sources}.")
+            return
+
+        new_count = current_count + 1
+        assignments = self.settings.assignments()
+        used_video_ids = {assignment.video_id for assignment in assignments}
+        if not any(assignment.role == new_count for assignment in assignments):
+            default_assignment = self._default_assignment_for_role(new_count, used_video_ids)
+            if default_assignment is not None:
+                assignments.append(default_assignment)
+
+        self.settings.set_camera_slot_count(new_count, save=False)
+        self.settings.save_assignments(sorted(assignments, key=lambda item: item.role))
+        self._configure_scene_from_settings()
+        self._set_status("Ready" if self.system.ingest.get_sources() else "Error")
+
+    def remove_camera_slot(self, role_index: int):
+        if self.system.is_running:
+            return
+        current_count = self.settings.camera_slot_count()
+        if current_count <= config_service.default_camera_slots:
+            return
+
+        assignments = []
+        for assignment in self.settings.assignments():
+            if assignment.role == role_index:
+                continue
+            role = assignment.role - 1 if assignment.role > role_index else assignment.role
+            assignments.append(
+                CameraAssignment(
+                    role=role,
+                    video_id=assignment.video_id,
+                    audio_id=assignment.audio_id,
+                    name=f"Camera {role}" if assignment.name.startswith("Camera ") else assignment.name,
+                )
+            )
+
+        self.settings.set_camera_slot_count(current_count - 1, save=False)
+        self.settings.save_assignments(sorted(assignments, key=lambda item: item.role))
+        self._configure_scene_from_settings()
+        self._set_status("Ready" if self.system.ingest.get_sources() else "Error")
 
     def _close_setup_devices(self, devices):
         for device in devices:
@@ -789,26 +1157,10 @@ class DashboardWindow:
             cap.release()
         return None
 
-    def auto_assign_by_audio(self):
+    def reset_default_devices(self):
         if self.system.is_running:
             return
-        sources = self.system.ingest.get_sources()
-        captures = self.system.ingest.captures
-        ranked = sorted(
-            zip(sources, captures),
-            key=lambda pair: pair[0].audio_level,
-            reverse=True,
-        )
-        assignments = []
-        for role, (source, capture) in enumerate(ranked[: config_service.max_sources], start=1):
-            assignments.append(
-                CameraAssignment(
-                    role=role,
-                    video_id=capture.device_id,
-                    audio_id=capture.audio_capture.device_id,
-                    name=self.display_names.get(source.id, f"Camera {role}"),
-                )
-            )
+        assignments = self._default_assignments()
         if assignments:
             self.settings.save_assignments(assignments)
             self._configure_scene_from_settings()
@@ -816,6 +1168,7 @@ class DashboardWindow:
     def change_card_role(self, source, role_label: str):
         if self.system.is_running:
             return
+        selected_role = None if role_label == "Do not use" else int(role_label.split()[-1])
         captures = self.system.ingest.captures
         sources = self.system.ingest.get_sources()
         assignments = []
@@ -823,13 +1176,13 @@ class DashboardWindow:
             if src.id == source.id:
                 if role_label == "Do not use":
                     continue
-                role = int(role_label.split()[-1])
+                role = selected_role
             else:
                 try:
                     role = int(src.name.split()[-1])
                 except Exception:
                     role = src.id
-                if role_label != "Do not use" and role == int(role_label.split()[-1]):
+                if selected_role is not None and role == selected_role:
                     continue
             assignments.append(
                 CameraAssignment(
@@ -839,6 +1192,8 @@ class DashboardWindow:
                     name=self.display_names.get(src.id, src.name),
                 )
             )
+        if selected_role is not None:
+            self.settings.set_camera_slot_count(max(self.settings.camera_slot_count(), selected_role), save=False)
         self.settings.save_assignments(sorted(assignments, key=lambda item: item.role))
         self._configure_scene_from_settings()
 
@@ -863,9 +1218,6 @@ class DashboardWindow:
             self.debug_window.lift()
             return
         self.debug_window = DebugLogsWindow(self.root, self.log_buffer)
-
-    def _identify_role(self, role_index: int):
-        self._append_log(f"Identify Camera {role_index}")
 
     def _set_status(self, value: str):
         self.status_badge.set(value)
