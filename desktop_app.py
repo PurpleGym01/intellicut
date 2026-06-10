@@ -564,6 +564,7 @@ class CameraSetupDialog(tk.Toplevel):
     def save(self):
         assignments = []
         used_roles = set()
+        used_audio_ids = {}
         for card in self.cards:
             assignment = card.assignment()
             if assignment is None:
@@ -571,6 +572,17 @@ class CameraSetupDialog(tk.Toplevel):
             if assignment.role in used_roles:
                 messagebox.showerror("Duplicate role", f"Camera {assignment.role} is assigned more than once.")
                 return
+            if assignment.audio_id is not None:
+                if assignment.audio_id in used_audio_ids:
+                    first_role = used_audio_ids[assignment.audio_id]
+                    microphone = assignment.audio_name or f"audio device {assignment.audio_id}"
+                    messagebox.showerror(
+                        "Duplicate microphone",
+                        f"{microphone} is assigned to Camera {first_role} and Camera {assignment.role}. "
+                        "Select a different microphone or choose No audio.",
+                    )
+                    return
+                used_audio_ids[assignment.audio_id] = assignment.role
             used_roles.add(assignment.role)
             assignments.append(assignment)
         self.result = sorted(assignments, key=lambda item: item.role)
@@ -686,20 +698,33 @@ class DashboardWindow:
             for item in self._resolved_settings_assignments()
             if item.video_id in available_video_ids and 1 <= item.role <= slot_count
         ]
+        should_save_assignments = False
 
         if not assignments and not self.settings.data.get("camera_roles_configured"):
             assignments = self._default_assignments(slot_count)
-            self.settings.save_assignments(assignments)
+            should_save_assignments = True
         else:
             completed = self._fill_missing_slot_assignments(assignments, slot_count)
             if completed != assignments:
                 assignments = completed
-                self.settings.save_assignments(assignments)
+                should_save_assignments = True
+
+        normalized = self._ensure_unique_audio_assignments(assignments)
+        if normalized != assignments:
+            assignments = normalized
+            should_save_assignments = True
+
+        if should_save_assignments:
+            self.settings.save_assignments(assignments)
 
         source_names = [f"Camera {item.role}" for item in assignments]
         video_ids = [item.video_id for item in assignments]
         audio_ids = [item.audio_id for item in assignments]
         self.display_names = {idx + 1: item.name for idx, item in enumerate(assignments)}
+        self.device_names = {
+            idx + 1: item.video_name or self._camera_device_name(item.video_id)
+            for idx, item in enumerate(assignments)
+        }
         self.source_id_by_role = {item.role: idx + 1 for idx, item in enumerate(assignments)}
 
         if source_names:
@@ -718,15 +743,86 @@ class DashboardWindow:
             used_video_ids.add(assignment.video_id)
         return sorted(by_role.values(), key=lambda item: item.role)
 
+    def _ensure_unique_audio_assignments(self, assignments: list[CameraAssignment]) -> list[CameraAssignment]:
+        ordered_assignments = sorted(assignments, key=lambda item: item.role)
+        audio_names = self._audio_name_map()
+        valid_audio_ids = set(audio_names)
+        default_audio_map = self._default_audio_assignments([assignment.video_id for assignment in ordered_assignments])
+        requested_audio_counts = {}
+        for assignment in ordered_assignments:
+            if assignment.audio_id is not None and assignment.audio_id in valid_audio_ids:
+                requested_audio_counts[assignment.audio_id] = requested_audio_counts.get(assignment.audio_id, 0) + 1
+        protected_audio_ids = {
+            audio_id
+            for audio_id, count in requested_audio_counts.items()
+            if count == 1
+        }
+        used_audio_ids = set()
+        normalized = []
+
+        for assignment in ordered_assignments:
+            audio_id = assignment.audio_id
+
+            if audio_id is not None and audio_id not in valid_audio_ids:
+                logger_service.get_logger().warning(
+                    "Saved audio device [%s] for Camera %s is not available; disabling audio for this camera.",
+                    audio_id,
+                    assignment.role,
+                )
+                audio_id = None
+
+            if audio_id is not None and audio_id in used_audio_ids:
+                duplicate_audio_id = audio_id
+                audio_id = self._replacement_audio_id(
+                    assignment.video_id,
+                    default_audio_map,
+                    used_audio_ids,
+                    valid_audio_ids,
+                    protected_audio_ids,
+                )
+                logger_service.get_logger().warning(
+                    "Saved audio device [%s] is already assigned; Camera %s will use [%s].",
+                    duplicate_audio_id,
+                    assignment.role,
+                    audio_id if audio_id is not None else "no audio",
+                )
+
+            if audio_id is not None:
+                used_audio_ids.add(audio_id)
+
+            normalized.append(
+                CameraAssignment(
+                    role=assignment.role,
+                    video_id=assignment.video_id,
+                    audio_id=audio_id,
+                    name=assignment.name,
+                    video_name=assignment.video_name,
+                    audio_name=audio_names.get(audio_id, "") if audio_id is not None else "",
+                )
+            )
+
+        return normalized
+
+    def _replacement_audio_id(self, video_id: int, default_audio_map, used_audio_ids, valid_audio_ids, protected_audio_ids):
+        preferred = default_audio_map.get(video_id)
+        if (
+            preferred is not None
+            and preferred in valid_audio_ids
+            and preferred not in used_audio_ids
+            and preferred not in protected_audio_ids
+        ):
+            return preferred
+        for item in self.system.ingest.audio_input_devices:
+            audio_id = item["index"]
+            if audio_id in valid_audio_ids and audio_id not in used_audio_ids and audio_id not in protected_audio_ids:
+                return audio_id
+        return None
+
     def _available_video_ids(self):
-        excluded = [
-            str(item).lower()
-            for item in getattr(config_service, "excluded_video_name_parts", [])
-        ]
         result = []
         for video_id in self.system.ingest.discovered_video_devices:
-            name = self._camera_device_name(video_id).lower()
-            if any(part in name for part in excluded):
+            name = self._camera_device_name(video_id)
+            if config_service.is_excluded_video_name(name):
                 continue
             result.append(video_id)
             if len(result) >= config_service.max_sources:
@@ -763,7 +859,6 @@ class DashboardWindow:
             video_id = next((item for item in video_ids if item not in used_video_ids), None)
         if video_id is None:
             return None
-        audio_map = self._default_audio_assignments(video_ids)
         audio_map = self._default_audio_assignments(video_ids)
         audio_id = audio_map.get(video_id)
 
@@ -1185,7 +1280,8 @@ class DashboardWindow:
         audio_choice_to_id = {"No audio": None}
         for item in audio_devices:
             audio_choice_to_id[f"[{item['index']}] {item['name']}"] = item["index"]
-        saved = {item.video_id: item for item in self._resolved_settings_assignments()}
+        saved_assignments = self._ensure_unique_audio_assignments(self._resolved_settings_assignments())
+        saved = {item.video_id: item for item in saved_assignments}
         slot_count = self.settings.camera_slot_count()
         video_ids = self._available_video_ids()
         default_video_ids = self._available_video_ids()[:slot_count]

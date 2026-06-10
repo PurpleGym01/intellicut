@@ -24,7 +24,13 @@ class ConfigService:
         # Desk View не выкидываю, потому что он может быть полезен.
         self.excluded_video_name_parts = [
             "capture screen",
+            "screen capture",
+            "screen recording",
+            "display capture",
+            "record screen",
             "захват экрана",
+            "запись экрана",
+            "снимок экрана",
         ]
 
         # Video
@@ -59,6 +65,24 @@ class ConfigService:
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
+
+    @staticmethod
+    def _normalize_device_filter_text(value: str) -> str:
+        return " ".join(str(value or "").lower().replace("-", " ").replace("_", " ").split())
+
+    def is_excluded_video_name(self, name: str) -> bool:
+        raw_name = str(name or "").lower()
+        normalized_name = self._normalize_device_filter_text(name)
+        if not normalized_name:
+            return False
+        for part in getattr(self, "excluded_video_name_parts", []) or []:
+            raw_part = str(part or "").lower().strip()
+            normalized_part = self._normalize_device_filter_text(part)
+            if raw_part and raw_part in raw_name:
+                return True
+            if normalized_part and normalized_part in normalized_name:
+                return True
+        return False
 
 
 config_service = ConfigService()

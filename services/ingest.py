@@ -250,7 +250,7 @@ class MicrophoneCapture:
         self.last_restart_ts = time.monotonic()
         self.status_error_times.clear()
         self.logger.warning(f"Restarting audio stream for {self.source_name} due to repeated errors")
-        self.stop()
+        self._close_stream()
         time.sleep(0.2)
         self.start()
 
@@ -316,7 +316,7 @@ class MicrophoneCapture:
         with self.lock:
             return self.level
 
-    def stop(self):
+    def _close_stream(self):
         if self.stream:
             try:
                 if self.stream.active:
@@ -329,6 +329,9 @@ class MicrophoneCapture:
                 self.logger.debug(f"Audio close failed for {self.source_name}: {e}")
         self.stream = None
         self.available = False
+
+    def stop(self):
+        self._close_stream()
         with self.restart_lock:
             self.restart_requested = False
         self.status_error_times.clear()
@@ -456,8 +459,11 @@ class IngestService:
                 if cap is not None:
                     cap.release()
 
-        listed = self._avfoundation_video_device_ids(max_index) if sys.platform == "darwin" else []
-        found = sorted(set(cv2_found).union(listed))
+        listed = []
+        excluded_listed = []
+        if sys.platform == "darwin":
+            listed, excluded_listed = self._avfoundation_video_device_ids(max_index)
+        found = sorted(set(cv2_found).union(listed).difference(excluded_listed))
         if found:
             self.logger.info(
                 f"Video devices detected in range 0..{max_index}: {', '.join(str(i) for i in found)}"
@@ -466,12 +472,17 @@ class IngestService:
                 self.logger.info(
                     f"AVFoundation listed video devices: {', '.join(str(i) for i in listed)}"
                 )
+            if excluded_listed:
+                self.logger.info(
+                    f"AVFoundation video devices hidden by filter: {', '.join(str(i) for i in excluded_listed)}"
+                )
         else:
             self.logger.warning(f"No video devices found in range 0..{max_index}")
         return found
 
-    def _avfoundation_video_device_ids(self, max_index: int) -> List[int]:
+    def _avfoundation_video_device_ids(self, max_index: int) -> tuple[List[int], List[int]]:
         ids = []
+        excluded_ids = []
         try:
             proc = subprocess.run(
                 ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
@@ -481,7 +492,7 @@ class IngestService:
                 timeout=4,
             )
         except Exception:
-            return ids
+            return ids, excluded_ids
 
         in_video = False
         for line in proc.stdout.splitlines():
@@ -494,12 +505,18 @@ class IngestService:
             if not in_video or "] [" not in line:
                 continue
             left = line.rsplit("[", 1)[-1]
-            idx, _, _name = left.partition("]")
+            idx, _, name = left.partition("]")
             if idx.strip().isdigit():
                 device_id = int(idx.strip())
                 if 0 <= device_id <= max_index:
-                    ids.append(device_id)
-        return sorted(set(ids))
+                    if config_service.is_excluded_video_name(name):
+                        excluded_ids.append(device_id)
+                    else:
+                        ids.append(device_id)
+        return sorted(set(ids)), sorted(set(excluded_ids))
+
+    def _audio_device_exists(self, device_id: Optional[int]) -> bool:
+        return any(dev["index"] == device_id for dev in self.audio_input_devices)
 
     def add_source(self, name: str, device_id: int = 0, audio_device_id: Optional[int] = None) -> VideoSource:
         if len(self.sources) >= config_service.max_sources:
@@ -512,10 +529,23 @@ class IngestService:
                 name,
                 camera_device_id=device_id,
             )
-        elif audio_device_id not in self.used_audio_device_ids:
-            self.used_audio_device_ids.add(audio_device_id)
+        elif not self._audio_device_exists(audio_device_id):
+            self.logger.warning(f"Audio device [{audio_device_id}] is not available; {name} will start without audio.")
+            audio_device_id = None
+        elif audio_device_id in self.used_audio_device_ids:
+            requested_audio_device_id = audio_device_id
+            audio_device_id = self._reserve_audio_device()
+            if audio_device_id is None:
+                self.logger.warning(
+                    f"Audio device [{requested_audio_device_id}] is already used; {name} will start without audio."
+                )
+            else:
+                self.logger.warning(
+                    f"Audio device [{requested_audio_device_id}] is already used; "
+                    f"{name} will use free audio device [{audio_device_id}] instead."
+                )
         else:
-            self.logger.warning(f"Audio device [{audio_device_id}] is already used; {name} will share it.")
+            self.used_audio_device_ids.add(audio_device_id)
         self.source_audio_device_ids[source.id] = audio_device_id
 
         capture = CameraCapture(
