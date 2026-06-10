@@ -1,8 +1,11 @@
+from pathlib import Path
+
 from services.ingest import IngestService
 from services.analysis import AnalysisService, AudioActivityStrategy
 from services.switching import SwitchingEngine
 from services.render import FFmpegAdapter
 from services.audio_mux import mux_audio_video
+from services.audio_denoise import denoise_wav_with_deepfilter
 from services.clock import RecordingClock
 from services.timeline import Timeline
 from core.events import event_bus
@@ -101,7 +104,12 @@ class IntellicutFacade:
             audio_paths = list(self.ingest.audio_recording_paths or [])
             if audio_paths:
                 audio_success = True
-                muxed = mux_audio_video(video_path, audio_paths[0])
+                audio_for_mux = denoise_wav_with_deepfilter(
+                    input_wav=audio_paths[0],
+                    output_dir=Path(video_path).parent,
+                    enabled=bool(getattr(config_service, "denoise_audio", True)),
+                )
+                muxed = mux_audio_video(video_path, str(audio_for_mux))
                 if muxed:
                     mux_success = True
                     self.render.last_output_path = muxed

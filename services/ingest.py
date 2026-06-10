@@ -588,7 +588,13 @@ class IngestService:
             if i < len(self.captures):
                 # Если камера работает - берем реальные данные, иначе - эмуляция уже записана
                 if self.captures[i].available:
-                    src.audio_level = self.captures[i].get_audio_level()
+                    mic = self.captures[i].audio_capture
+                    src.audio_level = mic.get_level()
+                    self.logger.debug(
+                        "SRC %s audio=%.3f",
+                        src.id,
+                        src.audio_level,
+                    )
         return self.sources
 
     def get_frame(self, source_index: int):

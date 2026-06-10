@@ -56,6 +56,7 @@ class ConfigService:
 
         # Recording
         self.record_audio = True
+        self.denoise_audio = True
         self.auto_cleanup_audio_temp = True
         self.auto_cleanup_audio_on_failure = True
 
