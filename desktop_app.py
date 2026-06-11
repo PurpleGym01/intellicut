@@ -39,6 +39,17 @@ CARD_SIDE_PAD = 28
 CARD_VERTICAL_CHROME = 166
 PREVIEW_ASPECT = 16 / 9
 
+# Font sizes (set once in main() based on display scaling)
+F_TITLE = 30
+F_DIALOG_TITLE = 24
+F_HEADING = 18
+F_SECTION = 16
+F_CARD = 15
+F_SETUP_CARD = 13
+F_STATUS = 12
+F_BODY = 11
+F_SMALL = 10
+
 
 @dataclass
 class CameraAssignment:
@@ -182,7 +193,7 @@ class DebugLogsWindow(tk.Toplevel):
             bg="#151619",
             fg=TEXT,
             insertbackground=TEXT,
-            font=("Menlo", 11),
+            font=("Menlo", F_BODY),
             relief=tk.FLAT,
             wrap=tk.WORD,
         )
@@ -206,7 +217,7 @@ class StatusBadge(tk.Label):
     }
 
     def __init__(self, master):
-        super().__init__(master, text="Stopped", font=("Helvetica Neue", 12, "bold"), padx=14, pady=6)
+        super().__init__(master, text="Stopped", font=("Helvetica Neue", F_STATUS, "bold"), padx=14, pady=6)
         self.set("Stopped")
 
     def set(self, value: str):
@@ -231,10 +242,10 @@ class CameraCard(tk.Frame):
         self.header = tk.Frame(self, bg=CARD_BG)
         self.header.pack(fill=tk.X, padx=12, pady=(6, 4))
 
-        self.role_label = tk.Label(self.header, text=f"Camera {role_index}", bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", 15, "bold"))
+        self.role_label = tk.Label(self.header, text=f"Camera {role_index}", bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", F_CARD, "bold"))
         self.role_label.pack(side=tk.LEFT)
 
-        self.badge = tk.Label(self.header, text="", bg=CARD_BG, fg=GREEN, font=("Helvetica Neue", 10, "bold"))
+        self.badge = tk.Label(self.header, text="", bg=CARD_BG, fg=GREEN, font=("Helvetica Neue", F_SMALL, "bold"))
         self.badge.pack(side=tk.LEFT, padx=(8, 0))
 
         self.remove_button = styled_button(self.header, "Remove", self._remove, bg="#4a2c2c", active="#633838")
@@ -246,13 +257,13 @@ class CameraCard(tk.Frame):
         self.preview = tk.Label(self.preview_shell, bg="#161719", bd=0, highlightthickness=0)
         self.preview.place(relx=0.5, rely=0.5, anchor="center")
 
-        self.name_label = tk.Label(self, text="Name: -", bg=CARD_BG, fg=TEXT, anchor="w", font=("Helvetica Neue", 11))
+        self.name_label = tk.Label(self, text="Name: -", bg=CARD_BG, fg=TEXT, anchor="w", font=("Helvetica Neue", F_BODY))
         self.name_label.pack(fill=tk.X, padx=12, pady=(6, 0))
 
         role_row = tk.Frame(self, bg=CARD_BG)
         role_row.pack(fill=tk.X, padx=12, pady=(4, 0))
         self.role_row = role_row
-        tk.Label(role_row, text="Role", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", 10)).pack(side=tk.LEFT)
+        tk.Label(role_row, text="Role", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", F_SMALL)).pack(side=tk.LEFT)
         self.role_var = tk.StringVar(value=f"Camera {role_index}")
         self.role_dropdown = dark_option_menu(
             role_row,
@@ -262,7 +273,7 @@ class CameraCard(tk.Frame):
         )
         self.role_dropdown.pack(side=tk.RIGHT)
 
-        self.audio_text = tk.Label(self, text="Audio level: 0%", bg=CARD_BG, fg=MUTED, anchor="w", font=("Helvetica Neue", 10))
+        self.audio_text = tk.Label(self, text="Audio level: 0%", bg=CARD_BG, fg=MUTED, anchor="w", font=("Helvetica Neue", F_SMALL))
         self.audio_text.pack(fill=tk.X, padx=12, pady=(4, 2))
 
         self.meter = ttk.Progressbar(self, maximum=100, mode="determinate")
@@ -347,7 +358,7 @@ class OutputPanel(tk.Frame):
         self.open_file_callback = open_file_callback
         self.open_folder_callback = open_folder_callback
 
-        tk.Label(self, text="Output", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", 16, "bold")).pack(anchor="w", padx=16, pady=(14, 8))
+        tk.Label(self, text="Output", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", F_BODY, "bold")).pack(anchor="w", padx=12, pady=(10, 6))
 
         self.folder_var = tk.StringVar(value="-")
         self.file_var = tk.StringVar(value="-")
@@ -358,17 +369,17 @@ class OutputPanel(tk.Frame):
         self._row("Status", self.status_var)
 
         buttons = tk.Frame(self, bg=PANEL_BG)
-        buttons.pack(fill=tk.X, padx=16, pady=(12, 16))
+        buttons.pack(fill=tk.X, padx=12, pady=(8, 10))
         self.choose_button = styled_button(buttons, "Choose folder", choose_callback)
-        self.choose_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.choose_button.pack(fill=tk.X, pady=(0, 4))
         self.open_file_button = styled_button(buttons, "Open file", open_file_callback)
-        self.open_file_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.open_file_button.pack(fill=tk.X, pady=(0, 4))
         self.open_folder_button = styled_button(buttons, "Open folder", open_folder_callback)
-        self.open_folder_button.pack(side=tk.LEFT)
+        self.open_folder_button.pack(fill=tk.X)
 
     def _row(self, label: str, variable: tk.StringVar):
-        tk.Label(self, text=label, bg=PANEL_BG, fg=MUTED, font=("Helvetica Neue", 10)).pack(anchor="w", padx=16, pady=(8, 0))
-        tk.Label(self, textvariable=variable, bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", 11), wraplength=320, justify=tk.LEFT).pack(anchor="w", padx=16, pady=(2, 0))
+        tk.Label(self, text=label, bg=PANEL_BG, fg=MUTED, font=("Helvetica Neue", F_SMALL)).pack(anchor="w", padx=12, pady=(6, 0))
+        tk.Label(self, textvariable=variable, bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", F_SMALL), wraplength=210, justify=tk.LEFT).pack(anchor="w", padx=12, pady=(1, 0))
 
     def update_output(self, folder: Path, latest_file: str | None, status: str):
         self.folder_var.set(str(folder))
@@ -381,25 +392,25 @@ class OutputPanel(tk.Frame):
 class ControlPanel(tk.Frame):
     def __init__(self, master, callbacks):
         super().__init__(master, bg=PANEL_BG, highlightthickness=1, highlightbackground=LINE)
-        tk.Label(self, text="Controls", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", 16, "bold")).pack(anchor="w", padx=16, pady=(14, 10))
+        tk.Label(self, text="Controls", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", F_BODY, "bold")).pack(anchor="w", padx=12, pady=(10, 8))
 
         self.start_button = styled_button(self, "Start", callbacks["start"], bg="#2f6f4e", active="#3b875f")
-        self.start_button.pack(fill=tk.X, padx=16, pady=5)
+        self.start_button.pack(fill=tk.X, padx=12, pady=4)
 
         self.stop_button = styled_button(self, "Stop", callbacks["stop"], bg="#7f3434", active="#9a4141")
-        self.stop_button.pack(fill=tk.X, padx=16, pady=5)
+        self.stop_button.pack(fill=tk.X, padx=12, pady=4)
 
         self.setup_button = styled_button(self, "Setup cameras", callbacks["setup"])
-        self.setup_button.pack(fill=tk.X, padx=16, pady=5)
+        self.setup_button.pack(fill=tk.X, padx=12, pady=4)
 
         self.add_camera_button = styled_button(self, "Add camera", callbacks["add_camera"])
-        self.add_camera_button.pack(fill=tk.X, padx=16, pady=5)
+        self.add_camera_button.pack(fill=tk.X, padx=12, pady=4)
 
         self.auto_button = styled_button(self, "Reset default devices", callbacks["auto_assign"])
-        self.auto_button.pack(fill=tk.X, padx=16, pady=5)
+        self.auto_button.pack(fill=tk.X, padx=12, pady=4)
 
         self.debug_button = styled_button(self, "Show logs", callbacks["logs"])
-        self.debug_button.pack(fill=tk.X, padx=16, pady=(5, 16))
+        self.debug_button.pack(fill=tk.X, padx=12, pady=(4, 10))
 
     def set_recording(self, recording: bool):
         self.start_button.configure(state=tk.DISABLED if recording else tk.NORMAL)
@@ -415,17 +426,17 @@ class SetupCameraCard(tk.Frame):
         self.device = device
         self.photo = None
 
-        self.title = tk.Label(self, text=device["device_label"], bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", 13, "bold"))
+        self.title = tk.Label(self, text=device["device_label"], bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", F_SETUP_CARD, "bold"))
         self.title.pack(anchor="w", padx=14, pady=(12, 6))
 
         self.preview = tk.Label(self, bg="#17181b", height=170)
         self.preview.pack(fill=tk.BOTH, padx=14, pady=(0, 8))
 
-        tk.Label(self, text="Name", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", 10)).pack(anchor="w", padx=14)
+        tk.Label(self, text="Name", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", F_SMALL)).pack(anchor="w", padx=14)
         self.name_var = tk.StringVar(value=device["name"])
         tk.Entry(self, textvariable=self.name_var, bg="#24262b", fg=TEXT, insertbackground=TEXT, relief=tk.FLAT).pack(fill=tk.X, padx=14, pady=(2, 8))
 
-        tk.Label(self, text="Microphone", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", 10)).pack(anchor="w", padx=14)
+        tk.Label(self, text="Microphone", bg=CARD_BG, fg=MUTED, font=("Helvetica Neue", F_SMALL)).pack(anchor="w", padx=14)
         self.audio_choice_to_id = dict(device["audio_choice_to_id"])
         self.audio_device_var = tk.StringVar(value=device["audio_label"])
         dark_option_menu(
@@ -436,7 +447,7 @@ class SetupCameraCard(tk.Frame):
         ).pack(fill=tk.X, padx=14, pady=(2, 8))
 
         self.audio_var = tk.StringVar(value="Audio level: 0%")
-        tk.Label(self, textvariable=self.audio_var, bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", 10)).pack(anchor="w", padx=14)
+        tk.Label(self, textvariable=self.audio_var, bg=CARD_BG, fg=TEXT, font=("Helvetica Neue", F_SMALL)).pack(anchor="w", padx=14)
         self.meter = ttk.Progressbar(self, maximum=100, mode="determinate")
         self.meter.configure(style="Audio.Horizontal.TProgressbar")
         self.meter.pack(fill=tk.X, padx=14, pady=(4, 10))
@@ -457,8 +468,8 @@ class SetupCameraCard(tk.Frame):
     def update_preview(self):
         frame = self.device["get_frame"]()
 
-        target_w = 300
-        target_h = 190
+        target_w = max(200, self.winfo_width() - 28)
+        target_h = max(130, int(target_w / PREVIEW_ASPECT))
 
         if frame is None:
             frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
@@ -508,14 +519,19 @@ class CameraSetupDialog(tk.Toplevel):
     def __init__(self, master, devices, max_sources: int):
         super().__init__(master)
         self.title("Setup cameras")
-        self.geometry("1160x720")
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        dialog_w = min(1160, screen_w - 80)
+        dialog_h = min(720, screen_h - 80)
+        self.geometry(f"{dialog_w}x{dialog_h}")
+        self.minsize(640, 480)
         self.configure(bg=APP_BG)
         self.result = None
         self.cards: list[SetupCameraCard] = []
         self.devices = devices
 
-        tk.Label(self, text="Setup cameras", bg=APP_BG, fg=TEXT, font=("Helvetica Neue", 24, "bold")).pack(anchor="w", padx=22, pady=(18, 4))
-        tk.Label(self, text=f"Assign devices to camera slots. Up to {config_service.max_sources} cameras are supported.", bg=APP_BG, fg=MUTED, font=("Helvetica Neue", 12)).pack(anchor="w", padx=22)
+        tk.Label(self, text="Setup cameras", bg=APP_BG, fg=TEXT, font=("Helvetica Neue", F_DIALOG_TITLE, "bold")).pack(anchor="w", padx=22, pady=(18, 4))
+        tk.Label(self, text=f"Assign devices to camera slots. Up to {config_service.max_sources} cameras are supported.", bg=APP_BG, fg=MUTED, font=("Helvetica Neue", F_STATUS)).pack(anchor="w", padx=22)
 
         body = tk.Frame(self, bg=APP_BG)
         body.pack(fill=tk.BOTH, expand=True, padx=22, pady=18)
@@ -524,20 +540,31 @@ class CameraSetupDialog(tk.Toplevel):
         if not devices:
             empty = tk.Frame(body, bg=PANEL_BG, highlightthickness=1, highlightbackground=LINE)
             empty.pack(fill=tk.BOTH, expand=True)
-            tk.Label(empty, text="No cameras found", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", 18, "bold")).pack(pady=(120, 8))
-            tk.Label(empty, text="Check camera permissions or connect a device.", bg=PANEL_BG, fg=MUTED, font=("Helvetica Neue", 12)).pack()
+            tk.Label(empty, text="No cameras found", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", F_HEADING, "bold")).pack(pady=(120, 8))
+            tk.Label(empty, text="Check camera permissions or connect a device.", bg=PANEL_BG, fg=MUTED, font=("Helvetica Neue", F_STATUS)).pack()
         else:
+            canvas = tk.Canvas(body, bg=APP_BG, highlightthickness=0)
+            scrollbar = tk.Scrollbar(body, orient=tk.VERTICAL, command=canvas.yview)
+            scroll_frame = tk.Frame(canvas, bg=APP_BG)
+
+            scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+
+            canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
             setup_cols = min(3, max(1, len(devices)))
             for idx, device in enumerate(devices):
-                card = SetupCameraCard(body, device, roles)
+                card = SetupCameraCard(scroll_frame, device, roles)
                 row = idx // setup_cols
                 col = idx % setup_cols
                 card.grid(row=row, column=col, sticky="nsew", padx=(0 if col == 0 else 12, 0), pady=(0 if row == 0 else 12, 0))
                 self.cards.append(card)
             for col in range(setup_cols):
-                body.columnconfigure(col, weight=1, uniform="setup_cols")
+                scroll_frame.columnconfigure(col, weight=1, uniform="setup_cols")
             for row in range((len(devices) + setup_cols - 1) // setup_cols):
-                body.rowconfigure(row, weight=1, uniform="setup_rows")
+                scroll_frame.rowconfigure(row, weight=1, uniform="setup_rows")
 
         footer = tk.Frame(self, bg=APP_BG)
         footer.pack(fill=tk.X, padx=22, pady=(0, 18))
@@ -598,7 +625,7 @@ class DashboardWindow:
         self.root = root
         self.root.title("IntelliCut")
         self.root.geometry("1280x760")
-        self.root.minsize(1120, 680)
+        self.root.minsize(960, 640)
         self.root.configure(bg=APP_BG)
 
         self.settings = UserSettings()
@@ -627,26 +654,25 @@ class DashboardWindow:
     def _build_ui(self):
         header = tk.Frame(self.root, bg=APP_BG)
         header.pack(fill=tk.X, padx=22, pady=(18, 12))
-        tk.Label(header, text="IntelliCut", bg=APP_BG, fg=TEXT, font=("Helvetica Neue", 30, "bold")).pack(side=tk.LEFT)
+        tk.Label(header, text="IntelliCut", bg=APP_BG, fg=TEXT, font=("Helvetica Neue", F_TITLE, "bold")).pack(side=tk.LEFT)
         self.status_badge = StatusBadge(header)
         self.status_badge.pack(side=tk.RIGHT)
 
         content = tk.Frame(self.root, bg=APP_BG)
         content.pack(fill=tk.BOTH, expand=True, padx=22, pady=(0, 22))
         content.columnconfigure(0, weight=1)
-        content.columnconfigure(1, weight=0)
+        content.columnconfigure(1, weight=0, minsize=240)
         content.rowconfigure(0, weight=1)
 
         self.camera_grid = tk.Frame(content, bg=APP_BG)
-        self.camera_grid.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+        self.camera_grid.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         for idx in range(config_service.max_sources):
             self.camera_grid.columnconfigure(idx % 3, weight=1)
             card = CameraCard(self.camera_grid, idx + 1, self.change_card_role, self.remove_camera_slot)
             self.camera_cards.append(card)
 
-        side = tk.Frame(content, bg=APP_BG, width=360)
+        side = tk.Frame(content, bg=APP_BG)
         side.grid(row=0, column=1, sticky="nsew")
-        side.grid_propagate(False)
 
         self.control_panel = ControlPanel(
             side,
@@ -659,14 +685,14 @@ class DashboardWindow:
                 "logs": self.show_logs,
             },
         )
-        self.control_panel.pack(fill=tk.X, pady=(0, 16))
+        self.control_panel.pack(fill=tk.X, pady=(0, 10))
 
         self.output_panel = OutputPanel(side, self.choose_output_folder, self.open_output_file, self.open_output_folder)
         self.output_panel.pack(fill=tk.X)
 
         self.empty_panel = tk.Frame(self.camera_grid, bg=PANEL_BG, highlightthickness=1, highlightbackground=LINE)
-        tk.Label(self.empty_panel, text="No cameras found", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", 18, "bold")).pack(padx=42, pady=(34, 8))
-        tk.Label(self.empty_panel, text="Check permissions or connect a camera.", bg=PANEL_BG, fg=MUTED, font=("Helvetica Neue", 12)).pack(padx=42, pady=(0, 18))
+        tk.Label(self.empty_panel, text="No cameras found", bg=PANEL_BG, fg=TEXT, font=("Helvetica Neue", F_HEADING, "bold")).pack(padx=42, pady=(34, 8))
+        tk.Label(self.empty_panel, text="Check permissions or connect a camera.", bg=PANEL_BG, fg=MUTED, font=("Helvetica Neue", F_STATUS)).pack(padx=42, pady=(0, 18))
         styled_button(self.empty_panel, "Refresh devices", self.open_setup).pack(pady=(0, 34))
 
     def _install_log_handler(self):
@@ -1148,7 +1174,7 @@ class DashboardWindow:
                 minsize=layout.card_size[0] if col < layout.cols else 0,
                 uniform="camera_cols" if col < layout.cols else "",
             )
-        for row in range(2):
+        for row in range(3):
             self.camera_grid.rowconfigure(
                 row,
                 weight=0,
@@ -1182,8 +1208,6 @@ class DashboardWindow:
                 card.grid_remove()
 
     def _camera_grid_layout(self, slot_count: int) -> CameraGridLayout:
-        cols = 2 if slot_count <= 4 else 3
-        rows = max(1, (slot_count + cols - 1) // cols)
         grid_w = self.camera_grid.winfo_width()
         grid_h = self.camera_grid.winfo_height()
         if grid_w < 300:
@@ -1191,17 +1215,32 @@ class DashboardWindow:
         if grid_h < 300:
             grid_h = 660
 
-        target_card_w = 408 if cols == 2 else 270
-        target_card_h = 390 if slot_count == 2 else 324 if cols == 2 else 316
-        top_pad = 48 if slot_count == 2 else 0
+        # Adaptive column count based on slots and available width
+        if slot_count <= 1:
+            preferred_cols = 1
+        elif slot_count == 2:
+            preferred_cols = 2
+        elif slot_count == 3:
+            preferred_cols = 3
+        elif slot_count == 4:
+            preferred_cols = 2
+        else:
+            preferred_cols = 3
 
-        max_card_w = max(220, int((grid_w - CARD_GAP * (cols - 1)) / cols))
-        max_card_h = max(240, int((grid_h - top_pad - CARD_GAP * (rows - 1)) / rows))
-        card_w = min(target_card_w, max_card_w)
-        card_h = min(target_card_h, max_card_h)
+        max_cols_by_width = max(1, int((grid_w + CARD_GAP) / (220 + CARD_GAP)))
+        cols = min(preferred_cols, max_cols_by_width)
+        rows = max(1, (slot_count + cols - 1) // cols)
+        top_pad = 48 if rows == 1 else 0
 
-        preview_max_w = max(160, card_w - CARD_SIDE_PAD)
-        preview_max_h = max(90, card_h - CARD_VERTICAL_CHROME)
+        card_w = max(220, min(640, int((grid_w - CARD_GAP * (cols - 1)) / cols)))
+        card_h = max(240, min(560, int((grid_h - top_pad - CARD_GAP * (rows - 1)) / rows)))
+
+        # Scale side padding and vertical chrome proportionally
+        side_pad = max(16, int(card_w * 0.06))
+        vertical_chrome = max(120, min(166, int(card_h * 0.38)))
+
+        preview_max_w = max(160, card_w - side_pad)
+        preview_max_h = max(90, card_h - vertical_chrome)
         preview_w = min(preview_max_w, int(preview_max_h * PREVIEW_ASPECT))
         preview_h = max(90, int(round(preview_w / PREVIEW_ASPECT)))
         if preview_h > preview_max_h:
@@ -1218,7 +1257,7 @@ class DashboardWindow:
 
     @staticmethod
     def _camera_grid_position(idx: int, slot_count: int, cols: int):
-        if slot_count == 3 and idx == 2:
+        if slot_count == 3 and cols == 2 and idx == 2:
             return 1, 0, 2
         return idx // cols, idx % cols, 1
 
@@ -1514,9 +1553,9 @@ class FlatButton(tk.Frame):
             text=text,
             bg=bg,
             fg=TEXT,
-            font=("Helvetica Neue", 11, "bold"),
-            padx=12,
-            pady=9,
+            font=("Helvetica Neue", F_SMALL, "bold"),
+            padx=10,
+            pady=7,
             cursor="hand2",
         )
         self.label.pack(fill=tk.BOTH, expand=True)
@@ -1592,7 +1631,7 @@ def dark_option_menu(master, variable, values, command=None):
         borderwidth=0,
         padx=10,
         pady=5,
-        font=("Helvetica Neue", 10, "bold"),
+        font=("Helvetica Neue", F_SMALL, "bold"),
         indicatoron=False,
     )
     menu["menu"].configure(
@@ -1601,7 +1640,7 @@ def dark_option_menu(master, variable, values, command=None):
         activebackground="#3a3d44",
         activeforeground=TEXT,
         borderwidth=0,
-        font=("Helvetica Neue", 10),
+        font=("Helvetica Neue", F_SMALL),
     )
     return menu
 
@@ -1632,7 +1671,37 @@ def open_path(path: Path):
 
 
 def main():
+    # Enable DPI awareness on Windows for crisp rendering on HiDPI displays
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                import ctypes
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
     root = tk.Tk()
+
+    # Scale font sizes for the current display
+    global F_TITLE, F_DIALOG_TITLE, F_HEADING, F_SECTION
+    global F_CARD, F_SETUP_CARD, F_STATUS, F_BODY, F_SMALL
+    try:
+        tk_scale = float(root.tk.call("tk", "scaling"))
+        factor = max(0.8, min(1.4, tk_scale / 1.33))
+        F_TITLE = max(20, round(30 * factor))
+        F_DIALOG_TITLE = max(16, round(24 * factor))
+        F_HEADING = max(13, round(18 * factor))
+        F_SECTION = max(12, round(16 * factor))
+        F_CARD = max(11, round(15 * factor))
+        F_SETUP_CARD = max(10, round(13 * factor))
+        F_STATUS = max(9, round(12 * factor))
+        F_BODY = max(9, round(11 * factor))
+        F_SMALL = max(8, round(10 * factor))
+    except Exception:
+        pass
     style = ttk.Style(root)
     try:
         style.theme_use("clam")
