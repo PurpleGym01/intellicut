@@ -29,8 +29,7 @@ from ui.theme import (
     MUTED,
     TEXT,
 )
-from ui.widgets import styled_button, StatusBadge, read_cap_frame
-from ui.console_ui import ConsoleUI
+from ui.widgets import styled_button, StatusBadge, read_cap_frame, trim_black_bars, resize_cover
 from utils.logger import logger_service
 
 
@@ -567,7 +566,7 @@ class DashboardWindow:
             seen.add(source_id)
             frame = self.system.ingest.get_frame(source_id - 1)
             if frame is not None:
-                return ConsoleUI._resize_cover(ConsoleUI._trim_black_bars(frame), target_w=1280, target_h=720)
+                return resize_cover(trim_black_bars(frame), target_w=1280, target_h=720)
         return None
 
     def _update_camera_cards(self):

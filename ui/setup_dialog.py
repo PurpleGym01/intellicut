@@ -122,7 +122,7 @@ class CameraSetupDialog(tk.Toplevel):
         self.title("Setup cameras")
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
-        dialog_w = min(1160, screen_w - 80)
+        dialog_w = min(720, screen_w - 80)
         dialog_h = min(720, screen_h - 80)
         self.geometry(f"{dialog_w}x{dialog_h}")
         self.minsize(640, 480)

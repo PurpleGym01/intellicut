@@ -31,6 +31,41 @@ def read_cap_frame(cap):
     return frame if ok else None
 
 
+def trim_black_bars(frame):
+    if frame is None or frame.size == 0:
+        return frame
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    row_mean = gray.mean(axis=1)
+
+    threshold = 20.0
+    max_crop = int(frame.shape[0] * 0.30)
+
+    top = 0
+    while top < max_crop and row_mean[top] < threshold:
+        top += 1
+
+    bottom = frame.shape[0] - 1
+    min_bottom = frame.shape[0] - 1 - max_crop
+    while bottom > min_bottom and row_mean[bottom] < threshold:
+        bottom -= 1
+
+    if top >= bottom:
+        return frame
+    return frame[top:bottom + 1, :]
+
+
+def resize_cover(frame, target_w=1280, target_h=720):
+    if frame is None or frame.size == 0:
+        return frame
+    h, w = frame.shape[:2]
+    scale = max(target_w / w, target_h / h)
+    resized = cv2.resize(frame, (int(w * scale), int(h * scale)))
+    rh, rw = resized.shape[:2]
+    x0 = max((rw - target_w) // 2, 0)
+    y0 = max((rh - target_h) // 2, 0)
+    return resized[y0:y0 + target_h, x0:x0 + target_w]
+
+
 def open_path(path):
     import os
     import subprocess
